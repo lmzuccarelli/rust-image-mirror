@@ -1,4 +1,5 @@
-// module api
+// module schema
+
 use clap::Parser;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
@@ -21,7 +22,7 @@ pub struct Manifest {
     pub digest: Option<String>,
 
     #[serde(rename = "mediaType")]
-    pub media_type: String,
+    pub media_type: Option<String>,
 
     #[serde(rename = "platform")]
     pub platform: Option<ManifestPlatform>,
@@ -85,6 +86,7 @@ pub struct History {
 #[serde(rename_all = "camelCase")]
 pub struct FsLayer {
     pub blob_sum: String,
+    pub original_ref: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

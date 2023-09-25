@@ -46,27 +46,6 @@ pub fn parse_json_token(data: String) -> Result<String, Box<dyn std::error::Erro
     Ok(root.access_token)
 }
 
-// parse the manifest json for operator indexes only
-pub fn parse_json_manifest(data: String) -> Result<ManifestSchema, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::ManifestSchema.
-    let root: ManifestSchema = serde_json::from_str(&data)?;
-    Ok(root)
-}
-
-// parse the manifest json for operators
-pub fn parse_json_manifest_operator(data: String) -> Result<Manifest, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::Manifest.
-    let root: Manifest = serde_json::from_str(&data)?;
-    Ok(root)
-}
-
-// parse the manifest list json
-pub fn parse_json_manifestlist(data: String) -> Result<ManifestList, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::ManifestList.
-    let root: ManifestList = serde_json::from_str(&data)?;
-    Ok(root)
-}
-
 // async api call with basic auth
 pub async fn get_auth_json(
     url: String,
