@@ -159,6 +159,14 @@ pub struct Cli {
     /// config file to use
     #[arg(short, long, value_name = "config", default_value = "")]
     pub config: Option<String>,
+
+    /// if set to true will create a diff tar file
+    #[arg(short, long, value_name = "diff-tar", default_value = "false")]
+    pub diff_tar: Option<bool>,
+
+    /// used only in conjuction with --diff-tar with format yyyy/mm/dd (will be ignored otherwise)
+    #[arg(long, value_name = "date", default_value = "")]
+    pub date: Option<String>,
 }
 
 /// config schema
