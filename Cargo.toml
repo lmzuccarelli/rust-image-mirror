@@ -19,3 +19,7 @@ tar = "0.4.38"
 clap = { version = "4.2.4", features = ["derive"] }
 serde_yaml = "0.9.21"
 semver = "1.0.17"
+walkdir = "2.4.0"
+chrono = "0.4.31"
+exitcode = "1.1.2"
+tempdir = "0.3.7"

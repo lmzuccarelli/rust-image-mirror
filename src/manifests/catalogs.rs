@@ -31,7 +31,7 @@ pub fn read_operator_catalog(path: String) -> Result<serde_json::Value, Box<dyn 
     Ok(root.overview)
 }
 
-// find a specifc directory in the untar layers
+// find a specific directory in the untar layers
 pub async fn find_dir(log: &Logging, dir: String, name: String) -> String {
     let paths = fs::read_dir(&dir);
     // for both release & operator image indexes
