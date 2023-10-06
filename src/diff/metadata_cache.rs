@@ -81,7 +81,6 @@ pub fn create_diff_tar(
     dirs: Vec<&std::string::String>,
     config: String,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    log.info("creating mirror_diff.tar.gz");
     let tmp_dir = TempDir::new("tmp-diff-tar")?;
     let from_base = String::from("working-dir/blobs-store/");
     fs::create_dir_all(tmp_dir.path().join("metadata"))?;
@@ -104,7 +103,7 @@ pub fn create_diff_tar(
                 let mnfst = parse_json_manifest_operator(s.clone()).unwrap();
                 for layer in mnfst.layers.unwrap().iter() {
                     let digest = layer.digest.split(":").nth(1).unwrap();
-                    log.info(&format!("layer to copy {:#?}", digest));
+                    log.hi(&format!("layer to copy {:#?}", digest));
                     let to_dir = String::from("blobs/") + digest;
                     let from = from_base.clone() + &digest[..2] + &String::from("/") + digest;
                     let to = tmp_dir.path().join(&to_dir);

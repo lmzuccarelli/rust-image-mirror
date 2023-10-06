@@ -1,5 +1,5 @@
 /target
 working-dir/
 blob-store/
-mirror-diff/
+mirror_diff/
 *.tar.gz

@@ -47,7 +47,7 @@ async fn main() {
     if args.diff_tar.unwrap() {
         if args.date.clone().unwrap().len() == 0 {
             current_cache = get_metadata_dirs_incremental(log);
-            log.info(&format!("directories {:#?} ", current_cache));
+            log.mid(&format!("current cache {:#?} ", current_cache));
         }
     }
 
@@ -81,11 +81,16 @@ async fn main() {
             new_cache = get_metadata_dirs_incremental(log);
         }
         let diff: Vec<_> = new_cache.difference(&current_cache).collect();
-        log.info(&format!("difference {:#?}", diff));
-        let res = create_diff_tar(log, diff, config);
-        match res {
-            Ok(_) => log.info("mirror-diff.tar.gz successfully created"),
-            Err(err) => log.error(&format!("errror creating diff tar {:#?}", err)),
+        log.mid(&format!("difference {:#?}", diff));
+        if diff.len() > 0 {
+            log.info("creating mirror_diff.tar.gz");
+            let res = create_diff_tar(log, diff, config);
+            match res {
+                Ok(_) => log.info("mirror-diff.tar.gz successfully created"),
+                Err(err) => log.error(&format!("errror creating diff tar {:#?}", err)),
+            }
+        } else {
+            log.info("no difference found mirror_diff.tar.gz not created");
         }
     }
 }

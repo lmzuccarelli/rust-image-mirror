@@ -157,7 +157,10 @@ fn get_related_images_from_catalog(
             .clone();
         let dc: Vec<DeclarativeConfig> = serde_json::from_value(dc_json.clone()).unwrap();
 
-        log.lo(&format!("default channel {:?} ", dc[0].default_channel));
+        log.lo(&format!(
+            "default channel {:?} for operator {} ",
+            dc[0].default_channel, pkg.name
+        ));
 
         // first check if channels are valid
         if pkg.channels.is_some() {
