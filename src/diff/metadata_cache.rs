@@ -7,7 +7,6 @@ use flate2::Compression;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
 use tempdir::TempDir;
@@ -88,30 +87,39 @@ pub fn create_diff_tar(
     fs::create_dir_all(tmp_dir.path().join("metadata"))?;
     fs::create_dir_all(tmp_dir.path().join("blobs"))?;
     for x in dirs {
-        // open the manifest file
-        let f = x.to_string() + &"/manifest.json".to_string();
-        let mut fh = File::open(&f)?;
-        // parse the file contents, read it into a Manifest struct
-        let mut s = String::new();
-        let _ = fh.read_to_string(&mut s)?;
-        fs::write(tmp_dir.path().join("manifest.json"), s.clone())?;
-        let mnfst = parse_json_manifest_operator(s.clone()).unwrap();
-        for layer in mnfst.layers.unwrap().iter() {
-            let digest = layer.digest.split(":").nth(1).unwrap();
-            log.info(&format!("layer to copy {:#?}", digest));
-            let to_dir = String::from("blobs/") + digest;
-            let from = from_base.clone() + &digest[..2] + &String::from("/") + digest;
-            let to = tmp_dir.path().join(&to_dir);
-            log.trace(&format!("copy from {:#?} to {:#?}", from, to));
-            fs::copy(from, to)?;
+        // open the manifest file/s (could be more than one - multiarch)
+        log.info(&format!("component directory {:#?}", x.to_string()));
+        fs::create_dir_all(tmp_dir.path().join(x.to_string()))?;
+        for entry in fs::read_dir(x.to_string())? {
+            let entry = entry?;
+            let path = entry.path();
+            let from = path.clone().into_os_string().into_string().unwrap();
+            let to = tmp_dir.path().join(from.clone());
+            // copy the manifest
+            fs::copy(from.clone(), to)?;
+            // parse the file contents, read it into a Manifest struct
+            let s = fs::read_to_string(from.clone())?;
+            log.trace(&format!("from {}", from));
+            if !from.contains("list") {
+                let mnfst = parse_json_manifest_operator(s.clone()).unwrap();
+                for layer in mnfst.layers.unwrap().iter() {
+                    let digest = layer.digest.split(":").nth(1).unwrap();
+                    log.info(&format!("layer to copy {:#?}", digest));
+                    let to_dir = String::from("blobs/") + digest;
+                    let from = from_base.clone() + &digest[..2] + &String::from("/") + digest;
+                    let to = tmp_dir.path().join(&to_dir);
+                    log.trace(&format!("copy from {:#?} to {:#?}", from, to));
+                    fs::copy(from, to)?;
+                }
+                let mnfst_config = mnfst.config.unwrap();
+                let cfg_digest = mnfst_config.digest.split(":").nth(1).unwrap();
+                log.lo(&format!("config to copy {:#?}", cfg_digest));
+                let from = from_base.clone() + &cfg_digest[..2] + &String::from("/") + cfg_digest;
+                let to_dir = String::from("blobs/") + cfg_digest;
+                let to = tmp_dir.path().join(&to_dir);
+                fs::copy(from, to)?;
+            }
         }
-        let mnfst_config = mnfst.config.unwrap();
-        let cfg_digest = mnfst_config.digest.split(":").nth(1).unwrap();
-        log.info(&format!("config to copy {:#?}", cfg_digest));
-        let from = from_base.clone() + &cfg_digest[..2] + &String::from("/") + cfg_digest;
-        let to_dir = String::from("blobs/") + cfg_digest;
-        let to = tmp_dir.path().join(&to_dir);
-        fs::copy(from, to)?;
     }
     // finally copy over the current imagesetconfig used
     fs::write(tmp_dir.path().join("metadata/isc.yaml"), config)?;
@@ -119,6 +127,7 @@ pub fn create_diff_tar(
     let tar_gz = File::create("mirror_diff.tar.gz")?;
     let enc = GzEncoder::new(tar_gz, Compression::default());
     let mut tar = tar::Builder::new(enc);
+    // add all the contents to the tar
     tar.append_dir_all(".", tmp_dir.path())?;
     tmp_dir.close()?;
     Ok(true)

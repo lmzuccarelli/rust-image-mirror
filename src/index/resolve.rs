@@ -53,7 +53,6 @@ pub async fn untar_layers(log: &Logging, dir: String, layers: Vec<FsLayer>) {
 // parse_image_index - best attempt to parse image index and return catalog reference
 pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageReference> {
     let mut image_refs = vec![];
-    let mut pkgs = vec![];
     for ops in operators.iter() {
         let img = ops.catalog.clone();
         log.trace(&format!("catalogs {:#?}", ops.catalog));
@@ -61,15 +60,12 @@ pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageRe
         let index = i.nth(0).unwrap();
         let mut hld = index.split("/");
         let ver = i.nth(0).unwrap();
-        for pkg in ops.packages.clone().unwrap().iter() {
-            pkgs.insert(0, pkg.name.clone());
-        }
         let ir = ImageReference {
             registry: hld.nth(0).unwrap().to_string(),
             namespace: hld.nth(0).unwrap().to_string(),
             name: hld.nth(0).unwrap().to_string(),
             version: ver.to_string(),
-            packages: pkgs.clone(),
+            packages: ops.packages.clone().unwrap(),
         };
 
         log.debug(&format!("image reference {:#?}", img));

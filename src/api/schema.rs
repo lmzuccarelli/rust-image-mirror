@@ -167,6 +167,10 @@ pub struct Cli {
     /// used only in conjuction with --diff-tar with format yyyy/mm/dd (will be ignored otherwise)
     #[arg(long, value_name = "date", default_value = "")]
     pub date: Option<String>,
+
+    /// set the loglevel. Valid argumenst are info, debug, trace
+    #[arg(value_enum, long, value_name = "loglevel", default_value = "info")]
+    pub loglevel: Option<String>,
 }
 
 /// config schema
@@ -203,7 +207,16 @@ pub struct Mirror {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Image {
     #[serde(rename = "name")]
-    name: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CatalogImage {
+    #[serde(rename = "name")]
+    pub name: String,
+
+    #[serde(rename = "channel")]
+    pub channel: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -224,7 +237,31 @@ pub struct Package {
     pub name: String,
 
     #[serde(rename = "channels")]
-    pub channels: Option<Vec<Image>>,
+    pub channels: Option<Vec<IncludeChannel>>,
+
+    #[serde(rename = "minVersion")]
+    pub min_version: Option<String>,
+
+    #[serde(rename = "maxVersion")]
+    pub max_version: Option<String>,
+
+    #[serde(rename = "minBundle")]
+    pub min_bundle: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IncludeChannel {
+    #[serde(rename = "name")]
+    pub name: String,
+
+    #[serde(rename = "minVersion")]
+    pub min_version: Option<String>,
+
+    #[serde(rename = "maxVersion")]
+    pub max_version: Option<String>,
+
+    #[serde(rename = "minBundle")]
+    pub min_bundle: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -309,6 +346,15 @@ pub struct RelatedImage {
     pub image: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RelatedImageWrapper {
+    #[serde(rename = "images")]
+    pub images: Vec<RelatedImage>,
+
+    #[serde(rename = "channel")]
+    pub channel: String,
+}
+
 // ChannelEntry used in the Channel struct
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChannelEntry {
@@ -369,5 +415,5 @@ pub struct ImageReference {
     pub namespace: String,
     pub name: String,
     pub version: String,
-    pub packages: Vec<String>,
+    pub packages: Vec<Package>,
 }

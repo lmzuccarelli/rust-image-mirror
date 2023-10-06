@@ -29,10 +29,17 @@ use log::logging::*;
 async fn main() {
     let args = Cli::parse();
     let cfg = args.config.as_ref().unwrap().to_string();
+    let level = args.loglevel.unwrap().to_string();
 
-    let log = &Logging {
-        log_level: Level::DEBUG,
+    // convert to enum
+    let res = match level.as_str() {
+        "info" => Level::INFO,
+        "debug" => Level::DEBUG,
+        "trace" => Level::TRACE,
+        _ => Level::INFO,
     };
+
+    let log = &Logging { log_level: res };
 
     log.info(&format!("rust-image-mirror {} ", cfg));
     let mut current_cache = HashSet::new();
@@ -40,14 +47,17 @@ async fn main() {
     if args.diff_tar.unwrap() {
         if args.date.clone().unwrap().len() == 0 {
             current_cache = get_metadata_dirs_incremental(log);
+            log.info(&format!("directories {:#?} ", current_cache));
         }
     }
-    log.info(&format!("directories {:#?} ", current_cache));
 
     // Parse the config serde_yaml::ImageSetConfiguration.
     let config = load_config(cfg).unwrap();
     let isc_config = parse_yaml_config(config.clone()).unwrap();
-    log.debug(&format!("{:#?}", isc_config.mirror.operators));
+    log.debug(&format!(
+        "image set config operators {:#?}",
+        isc_config.mirror.operators
+    ));
 
     // TODO: call release collector
 

@@ -5,3 +5,6 @@ mirror:
   - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.13"
     packages:
     - name: aws-load-balancer-operator
+      channels: 
+      - name: stable-v1
+      - name: alpha

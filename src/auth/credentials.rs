@@ -35,7 +35,7 @@ pub fn get_credentials() -> Result<String, Box<dyn std::error::Error>> {
 pub fn parse_json_creds(log: &Logging, data: String) -> Result<String, Box<dyn std::error::Error>> {
     // Parse the string of data into serde_json::Root.
     let creds: Root = serde_json::from_str(&data)?;
-    log.trace(&format!("creds {:?}", creds.auths.registry_redhat_io));
+    log.trace("using credentials for registry_redhat_io");
     Ok(creds.auths.registry_redhat_io.unwrap().auth)
 }
 
