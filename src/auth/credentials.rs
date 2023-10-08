@@ -92,3 +92,56 @@ pub async fn get_token(log: &Logging, name: String) -> String {
     let token = parse_json_token(res).unwrap();
     token
 }
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+    use serial_test::serial;
+
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+    // first get the token to obtain highest level of coverage
+    #[test]
+    #[serial]
+    fn test_get_token_pass() {
+        env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+        let res = aw!(get_token(log, String::from("registry.redhat.io")));
+        assert!(res.to_string() != String::from(""));
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_json_creds_pass() {
+        env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+        let data = get_credentials().unwrap();
+        let res = parse_json_creds(log, data);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_credentials_pass() {
+        env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        let res = get_credentials();
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic]
+    fn test_get_credentials_fail() {
+        env::remove_var("XDG_RUNTIME_DIR");
+        let res = get_credentials();
+        assert!(res.is_err());
+    }
+}

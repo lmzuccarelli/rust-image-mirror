@@ -132,3 +132,27 @@ cargo run -- --config imagesetconfig.yaml
  INFO   : writing blob 97da74cc6d8fa5d1634eb1760fd1da5c6048619c264c23e62d75f3bf6b8ef5c4
 ```
 
+## Testing
+
+Ensure grcov and  llvm tools-preview are installed
+
+```
+cargo install grcov 
+
+rustup component add llvm-tools-preview
+
+```
+
+execute the tests
+
+```
+CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test
+```
+
+check the code coverage
+
+```
+$ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-existing --ignore '../*' --ignore "/*" -o target/coverage/html
+
+```
+

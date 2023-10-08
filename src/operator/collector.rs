@@ -16,7 +16,11 @@ pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
     log.debug(&format!("Image refs {:#?}", img_ref));
 
     for ir in img_ref {
-        let manifest_json = get_manifest_json_file(ir.name.clone(), ir.version.clone());
+        let manifest_json = get_manifest_json_file(
+            String::from("./working-dir"),
+            ir.name.clone(),
+            ir.version.clone(),
+        );
         let token = get_token(log, ir.registry.clone()).await;
         // use token to get manifest
         let manifest_url = get_image_manifest_url(ir.clone());

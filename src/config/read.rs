@@ -27,3 +27,30 @@ pub fn parse_yaml_config(data: String) -> Result<ImageSetConfig, serde_yaml::Err
     let res = serde_yaml::from_str::<ImageSetConfig>(&data);
     res
 }
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    #[test]
+    fn test_load_config_pass() {
+        let res = load_config(String::from("./imagesetconfig.yaml"));
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_load_config_fail() {
+        let res = load_config(String::from("./nada.yaml"));
+        assert!(res.is_err());
+    }
+
+    // finally test that the parser is working correctly
+    #[test]
+    fn test_isc_parser() {
+        let data = load_config(String::from("./imagesetconfig.yaml"));
+        let res = parse_yaml_config(data.unwrap().to_string());
+        assert!(res.is_ok());
+    }
+}

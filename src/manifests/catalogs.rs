@@ -134,12 +134,140 @@ pub fn get_manifest_url_by_digest(url: String, digest: String) -> String {
 }
 
 // utility functions - get_manifest_json
-pub fn get_manifest_json_file(name: String, version: String) -> String {
-    let mut file = String::from("working-dir/");
+pub fn get_manifest_json_file(dir: String, name: String, version: String) -> String {
+    let mut file = dir.clone();
     file.push_str(&name);
     file.push_str(&"/");
     file.push_str(&version);
     file.push_str(&"/");
     file.push_str(&"manifest.json");
     file
+}
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+
+    #[test]
+    fn read_operator_catalog_pass() {
+        let res = read_operator_catalog(String::from("./test-artifacts/operator"));
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn find_dir_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let res = aw!(find_dir(
+            log,
+            String::from("./test-artifacts/cache"),
+            String::from("configs"),
+        ));
+        assert_ne!(res, String::from(""));
+    }
+
+    #[test]
+    fn parse_json_manifest_pass() {
+        let contents = fs::read_to_string(String::from(
+            "./test-artifacts/index-manifest/v1/manifest.json",
+        ))
+        .expect("Should have been able to read the file");
+        let res = parse_json_manifest(contents);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn parse_json_manifest_operator_pass() {
+        let contents = fs::read_to_string(String::from(
+            "./test-artifacts/operator/manifest-amd64.json",
+        ))
+        .expect("Should have been able to read the file");
+        let res = parse_json_manifest_operator(contents);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn parse_json_manifestlist_pass() {
+        let contents =
+            fs::read_to_string(String::from("./test-artifacts/operator/manifest-list.json"))
+                .expect("Should have been able to read the file");
+        let res = parse_json_manifestlist(contents);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn get_image_manifest_url_pass() {
+        let ic = IncludeChannel {
+            name: String::from("preview"),
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let vec_ic = vec![ic];
+        let pkg = Package {
+            name: String::from("test"),
+            channels: Some(vec_ic),
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let vec_pkg = vec![pkg];
+        let imageref = ImageReference {
+            registry: String::from("test.registry.io"),
+            namespace: String::from("test"),
+            name: String::from("some-operator"),
+            version: String::from("v0.0.1"),
+            packages: vec_pkg,
+        };
+        let res = get_image_manifest_url(imageref);
+        assert_eq!(
+            res,
+            String::from("https://test.registry.io/v2/test/some-operator/manifests/v0.0.1")
+        );
+    }
+
+    #[test]
+    fn get_manifest_url_pass() {
+        let url = String::from("test.registry.io/test/some-operator@sha256:1234567890");
+        let res = get_manifest_url(url);
+        assert_eq!(
+            res,
+            String::from(
+                "https://test.registry.io/v2/test/some-operator/manifests/sha256:1234567890"
+            )
+        );
+    }
+
+    #[test]
+    fn get_manifest_url_by_digest_pass() {
+        let url = String::from("test.registry.io/test/some-operator");
+        let digest = String::from("sha256:1234567890");
+        let res = get_manifest_url_by_digest(url, digest);
+        assert_eq!(
+            res,
+            String::from(
+                "https://test.registry.io/v2/test/some-operator/manifests/sha256:1234567890"
+            )
+        );
+    }
+
+    #[test]
+    fn get_manifest_json_file_pass() {
+        let dir = String::from("./test-artifacts");
+        let name = String::from("/index-manifest");
+        let version = String::from("v1");
+        let res = get_manifest_json_file(dir, name, version);
+        assert_eq!(
+            res,
+            String::from("./test-artifacts/index-manifest/v1/manifest.json")
+        );
+    }
 }

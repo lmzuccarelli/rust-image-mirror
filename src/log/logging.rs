@@ -82,3 +82,73 @@ impl Logging {
         println!("\x1b[1;91m {} \x1b[0m : {}", "ERROR", msg);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    #[test]
+    fn test_info_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        log.info("testing info logging");
+    }
+
+    #[test]
+    fn test_debug_pass() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+        log.debug("testing debug logging");
+    }
+
+    #[test]
+    fn test_trace_pass() {
+        let log = &Logging {
+            log_level: Level::TRACE,
+        };
+        log.trace("testing trace logging");
+    }
+
+    #[test]
+    fn test_warn_pass() {
+        let log = &Logging {
+            log_level: Level::WARN,
+        };
+        log.warn("testing warn logging");
+    }
+
+    #[test]
+    fn test_lo_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        log.lo("testing lo logging");
+    }
+
+    #[test]
+    fn test_mid_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        log.mid("testing mid logging");
+    }
+
+    #[test]
+    fn test_hi_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        log.hi("testing hi logging");
+    }
+
+    #[test]
+    fn test_error_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        log.error("testing error logging");
+    }
+}
