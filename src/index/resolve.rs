@@ -12,7 +12,12 @@ use crate::batch::copy::*;
 use crate::log::logging::*;
 
 // untar layers in directory denoted by parameter 'dir'
-pub async fn untar_layers(log: &Logging, dir: String, layers: Vec<FsLayer>) {
+pub async fn untar_layers(
+    log: &Logging,
+    blobs_store: String,
+    cache_dir: String,
+    layers: Vec<FsLayer>,
+) {
     // clean all duplicates
     let mut images = Vec::new();
     let mut seen = HashSet::new();
@@ -28,9 +33,11 @@ pub async fn untar_layers(log: &Logging, dir: String, layers: Vec<FsLayer>) {
     // read directory, iterate each file and untar
     for path in images.iter() {
         let blob = path.split(":").nth(1).unwrap();
-        let cache_file = dir.clone() + "/" + &blob[..6];
+        let cache_file = cache_dir.clone() + "/" + &blob[..6];
+        log.trace(&format!("cache file {}", cache_file));
         if !Path::new(&cache_file).exists() {
-            let file = get_blobs_file(blob);
+            let file = get_blobs_file(blobs_store.clone(), blob);
+            log.trace(&format!("blobs file {}", file));
             let tar_gz = File::open(file).expect("could not open file");
             let tar = GzDecoder::new(tar_gz);
             let mut archive = Archive::new(tar);
@@ -45,7 +52,7 @@ pub async fn untar_layers(log: &Logging, dir: String, layers: Vec<FsLayer>) {
                 }
             };
         } else {
-            log.debug(&format!("cache exists {}", cache_file));
+            log.info(&format!("cache exists {}", cache_file));
         }
     }
 }
@@ -75,12 +82,86 @@ pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageRe
 }
 
 // get_cache_dir
-pub fn get_cache_dir(name: String, version: String) -> String {
-    let mut file = String::from("working-dir/");
+pub fn get_cache_dir(dir: String, name: String, version: String) -> String {
+    let mut file = dir.clone();
     file.push_str(&name);
     file.push_str(&"/");
     file.push_str(&version);
     file.push_str(&"/");
     file.push_str(&"cache");
     file
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::fs;
+
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+
+    #[test]
+    fn get_cache_dir_pass() {
+        let res = get_cache_dir(
+            String::from("./test-artifacts"),
+            String::from("/operator"),
+            String::from("v1"),
+        );
+        assert_eq!(res, String::from("./test-artifacts/operator/v1/cache"));
+    }
+
+    #[test]
+    fn parse_image_index_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let pkg = Package {
+            name: String::from("test-operator"),
+            channels: None,
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let vec_pkg = vec![pkg];
+        let op = Operator {
+            catalog: String::from("test.registry.io/test/operator-index:v0.0.1"),
+            packages: Some(vec_pkg),
+        };
+        let vec_op = vec![op];
+        let res = parse_image_index(log, vec_op);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].packages.len(), 1);
+        assert_eq!(res[0].registry, String::from("test.registry.io"));
+    }
+
+    #[test]
+    fn untar_layers_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let mut vec_layers = vec![];
+        let fslayer = FsLayer {
+            blob_sum: String::from("sha256:a48865"),
+            original_ref: Some(String::from("test-a4")),
+        };
+        vec_layers.insert(0, fslayer);
+        let fslayer = FsLayer {
+            blob_sum: String::from("sha256:b4385e"),
+            original_ref: Some(String::from("test-b4")),
+        };
+        vec_layers.insert(0, fslayer);
+        fs::remove_dir_all("./test-artifacts/index-manifest/v1/new-cache");
+        aw!(untar_layers(
+            log,
+            String::from("./test-artifacts/index-manifest/v1/blobs-store"),
+            String::from("./test-artifacts/index-manifest/v1/new-cache"),
+            vec_layers,
+        ));
+    }
 }

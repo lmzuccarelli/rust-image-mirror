@@ -63,7 +63,12 @@ async fn main() {
 
     // call operator collector
     // let token = get_token(log,isc_config.mirror.operators)
-    mirror_to_disk(log, isc_config.mirror.operators.unwrap()).await;
+    mirror_to_disk(
+        log,
+        String::from("./working-dir/"),
+        isc_config.mirror.operators.unwrap(),
+    )
+    .await;
     // get_blobs(log, &"", , images)
 
     // TODO: call additionalImages collector

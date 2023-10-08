@@ -168,7 +168,7 @@ mod tests {
         };
         let res = aw!(find_dir(
             log,
-            String::from("./test-artifacts/cache"),
+            String::from("./test-artifacts/index-manifest/v1/cache"),
             String::from("configs"),
         ));
         assert_ne!(res, String::from(""));

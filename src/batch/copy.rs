@@ -33,7 +33,13 @@ pub async fn get_manifest(
 
 // get each blob referred to by the vector in parallel
 // set by the PARALLEL_REQUESTS value
-pub async fn get_blobs(log: &Logging, url: String, token: String, layers: Vec<FsLayer>) {
+pub async fn get_blobs(
+    log: &Logging,
+    dir: String,
+    url: String,
+    token: String,
+    layers: Vec<FsLayer>,
+) {
     const PARALLEL_REQUESTS: usize = 8;
 
     let client = Client::new();
@@ -46,7 +52,7 @@ pub async fn get_blobs(log: &Logging, url: String, token: String, layers: Vec<Fs
     for img in layers.iter() {
         // truncate sha256:
         let truncated_image = img.blob_sum.split(":").nth(1).unwrap();
-        let inner_blobs_file = get_blobs_file(&truncated_image);
+        let inner_blobs_file = get_blobs_file(dir.clone(), &truncated_image);
         let exist = Path::new(&inner_blobs_file).exists();
         if !seen.contains(truncated_image) && !exist {
             seen.insert(truncated_image);
@@ -72,6 +78,7 @@ pub async fn get_blobs(log: &Logging, url: String, token: String, layers: Vec<Fs
         let client = client.clone();
         let url = blob.original_ref.unwrap().clone();
         let header_bearer = header_bearer.clone();
+        let wrk_dir = dir.clone();
         async move {
             match client
                 .get(url + &blob.blob_sum)
@@ -82,7 +89,7 @@ pub async fn get_blobs(log: &Logging, url: String, token: String, layers: Vec<Fs
                 Ok(resp) => match resp.bytes().await {
                     Ok(bytes) => {
                         let blob = blob.blob_sum.split(":").nth(1).unwrap();
-                        let blob_dir = get_blobs_dir(blob);
+                        let blob_dir = get_blobs_dir(wrk_dir.clone(), blob);
                         fs::create_dir_all(blob_dir.clone()).expect("unable to create direcory");
                         fs::write(blob_dir + &blob, bytes.clone()).expect("unable to write blob");
                         let msg = format!("writing blob {}", blob);
@@ -102,7 +109,7 @@ pub async fn get_blobs(log: &Logging, url: String, token: String, layers: Vec<Fs
     }))
     .buffer_unordered(PARALLEL_REQUESTS)
     .collect::<Vec<()>>();
-    log.info("downloading blobs...");
+    log.debug("downloading blobs...");
     fetches.await;
 }
 
@@ -137,16 +144,19 @@ pub fn get_blobs_url_by_string(img: String) -> String {
 }
 
 // construct blobs dir
-pub fn get_blobs_dir(name: &str) -> String {
-    let mut file = String::from("working-dir/blobs-store/");
+pub fn get_blobs_dir(dir: String, name: &str) -> String {
+    //let mut file = String::from("working-dir/blobs-store/");
+    let mut file = dir.clone();
     file.push_str(&name[..2]);
     file.push_str(&"/");
     file
 }
 
 // construct blobs file
-pub fn get_blobs_file(name: &str) -> String {
-    let mut file = String::from("working-dir/blobs-store/");
+pub fn get_blobs_file(dir: String, name: &str) -> String {
+    //let mut file = String::from("working-dir/blobs-store/");
+    let mut file = dir.clone();
+    file.push_str("/");
     file.push_str(&name[..2]);
     file.push_str(&"/");
     file.push_str(&name);

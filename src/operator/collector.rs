@@ -8,7 +8,7 @@ use crate::manifests::catalogs::*;
 use std::fs;
 
 // collect all operator images
-pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
+pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>) {
     log.info("operator collector mode: mirrorToDisk");
 
     // parse the config - iterate through each catalog
@@ -17,10 +17,12 @@ pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
 
     for ir in img_ref {
         let manifest_json = get_manifest_json_file(
-            String::from("./working-dir"),
+            // ./working-dir
+            dir.clone(),
             ir.name.clone(),
             ir.version.clone(),
         );
+        log.trace(&format!("manifest json file {}", manifest_json));
         let token = get_token(log, ir.registry.clone()).await;
         // use token to get manifest
         let manifest_url = get_image_manifest_url(ir.clone());
@@ -33,21 +35,38 @@ pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
         let res = parse_json_manifest(manifest).unwrap();
         let blobs_url = get_blobs_url(ir.clone());
         // use a concurrent process to get related blobs
-        get_blobs(log, blobs_url, token.clone(), res.fs_layers.clone()).await;
+        let sub_dir = dir.clone() + "/blobs-store/";
+        get_blobs(
+            log,
+            sub_dir.clone(),
+            blobs_url,
+            token.clone(),
+            res.fs_layers.clone(),
+        )
+        .await;
         log.info("completed image index download");
 
-        let working_dir_cache = get_cache_dir(ir.name.clone(), ir.version.clone());
+        let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
         // create the cache directory
         fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
-        untar_layers(log, working_dir_cache.clone(), res.fs_layers).await;
+        untar_layers(
+            log,
+            sub_dir.clone(),
+            working_dir_cache.clone(),
+            res.fs_layers,
+        )
+        .await;
         log.hi("completed untar of layers");
 
         // find the directory 'configs'
         // TODO if new blobs are downloaded the config dir could be in another blob
-        let dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
-        log.mid(&format!("full path for directory 'configs' {} ", &dir));
+        let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
+        log.mid(&format!(
+            "full path for directory 'configs' {} ",
+            &config_dir
+        ));
 
-        let wrappers = get_related_images_from_catalog(log, dir, ir.packages.clone());
+        let wrappers = get_related_images_from_catalog(log, config_dir, ir.packages.clone());
         // log.trace(&format!("images from catalog for {:#?}", ir.packages));
 
         // iterate through all the related images
@@ -57,6 +76,7 @@ pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
                 let op_name = get_operator_name(imgs.image.clone());
                 log.trace(&format!("operator name {:#?}", op_name));
                 let op_dir = get_operator_manifest_json_dir(
+                    dir.clone(),
                     ir.name.clone(),
                     ir.version.clone(),
                     op_name.clone(),
@@ -141,7 +161,14 @@ pub async fn mirror_to_disk(log: &Logging, operator: Vec<Operator>) {
                     fslayers.insert(0, cfg);
                 }
                 let op_url = get_blobs_url_by_string(imgs.image.clone());
-                get_blobs(log, op_url, token.clone(), fslayers.clone()).await;
+                get_blobs(
+                    log,
+                    sub_dir.clone(),
+                    op_url,
+                    token.clone(),
+                    fslayers.clone(),
+                )
+                .await;
             }
         }
     }
@@ -237,12 +264,14 @@ fn get_operator_name(img: String) -> String {
 
 // utility functions - get_operator_manifest_json_dir
 fn get_operator_manifest_json_dir(
+    dir: String,
     name: String,
     version: String,
     operator: String,
     channel: String,
 ) -> String {
-    let mut file = String::from("working-dir/");
+    // ./working-dir
+    let mut file = dir.clone();
     file.push_str(&name);
     file.push_str(&"/");
     file.push_str(&version);

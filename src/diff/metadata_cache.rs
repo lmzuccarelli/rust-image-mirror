@@ -68,7 +68,7 @@ pub fn get_metadata_dirs_incremental(log: &Logging) -> HashSet<String> {
                 && (Path::new(&(dir.clone() + &"/manifest.json".to_string())).exists()
                     || Path::new(&(dir.clone() + &"/manifest-list.json".to_string())).exists())
             {
-                log.info(&format!("valid metadata directories {:#?}", dir));
+                log.debug(&format!("valid metadata directories {:#?}", dir));
                 valid_dirs.insert(dir);
             }
         }
