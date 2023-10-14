@@ -62,19 +62,14 @@ async fn main() {
     // TODO: call release collector
 
     // call operator collector
-    // let token = get_token(log,isc_config.mirror.operators)
     mirror_to_disk(
         log,
         String::from("./working-dir/"),
         isc_config.mirror.operators.unwrap(),
     )
     .await;
-    // get_blobs(log, &"", , images)
 
     // TODO: call additionalImages collector
-
-    // let op_url = get_blobs_url_by_string(img.image.clone());
-    // get_blobs(log, op_url, token.clone(), fslayers.clone()).await;
 
     // if flag diff-tar is set create a diff tar.gz
     if args.diff_tar.unwrap() {

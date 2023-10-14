@@ -31,6 +31,8 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
             .unwrap();
 
         // create the full path
+        // TODO:
+        // fs::create_dir_all(manifest_json.clone()).expect("unable to create directory");
         fs::write(manifest_json, manifest.clone()).expect("unable to write file");
         let res = parse_json_manifest(manifest).unwrap();
         let blobs_url = get_blobs_url(ir.clone());
@@ -140,9 +142,10 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                         }
                     }
                 } else {
-                    fs::write(op_dir + "/manifest.json", manifest.clone())
+                    fs::write(op_dir.clone() + "/manifest.json", manifest.clone())
                         .expect("unable to write file");
                     // now download each related images blobs
+                    log.debug(&format!("manifest dir {:#?}", op_dir));
                     let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
                     log.trace(&format!("op_manifest {:#?}", op_manifest));
                     // convert op_manifest.layer to FsLayer
