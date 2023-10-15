@@ -87,6 +87,7 @@ pub struct History {
 pub struct FsLayer {
     pub blob_sum: String,
     pub original_ref: Option<String>,
+    pub result: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

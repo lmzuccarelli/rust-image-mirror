@@ -4,9 +4,7 @@ use futures::{stream, StreamExt};
 use reqwest::Client;
 use std::collections::HashSet;
 use std::fs;
-//use std::fs::File;
 use std::path::Path;
-//use tar::Archive;
 
 use crate::api::schema::*;
 use crate::log::logging::*;
@@ -16,7 +14,7 @@ pub async fn get_manifest(
     url: String,
     token: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
+    let client = Client::new();
     let mut header_bearer: String = "Bearer ".to_owned();
     header_bearer.push_str(&token);
     let body = client
@@ -39,7 +37,7 @@ pub async fn get_blobs(
     url: String,
     token: String,
     layers: Vec<FsLayer>,
-) {
+) -> String {
     const PARALLEL_REQUESTS: usize = 8;
 
     let client = Client::new();
@@ -62,17 +60,21 @@ pub async fn get_blobs(
                 let layer = FsLayer {
                     blob_sum: img.blob_sum.clone(),
                     original_ref: Some(img_ref),
+                    result: Some(String::from("")),
                 };
                 images.push(layer);
             } else {
                 let layer = FsLayer {
                     blob_sum: img.blob_sum.clone(),
                     original_ref: Some(url.clone()),
+                    result: Some(String::from("")),
                 };
                 images.push(layer);
             }
         }
     }
+
+    log.info(&format!("fslayers vector {:#?}", images));
 
     let fetches = stream::iter(images.into_iter().map(|blob| {
         let client = client.clone();
@@ -81,27 +83,28 @@ pub async fn get_blobs(
         let wrk_dir = dir.clone();
         async move {
             match client
-                .get(url + &blob.blob_sum)
+                .get(url.clone() + &blob.blob_sum)
                 .header("Authorization", header_bearer)
                 .send()
                 .await
             {
                 Ok(resp) => match resp.bytes().await {
                     Ok(bytes) => {
-                        let blob = blob.blob_sum.split(":").nth(1).unwrap();
-                        let blob_dir = get_blobs_dir(wrk_dir.clone(), blob);
+                        let blob_digest = blob.blob_sum.split(":").nth(1).unwrap();
+                        let blob_dir = get_blobs_dir(wrk_dir.clone(), blob_digest);
                         fs::create_dir_all(blob_dir.clone()).expect("unable to create direcory");
-                        fs::write(blob_dir + &blob, bytes.clone()).expect("unable to write blob");
-                        let msg = format!("writing blob {}", blob);
+                        fs::write(blob_dir + &blob_digest, bytes.clone())
+                            .expect("unable to write blob");
+                        let msg = format!("writing blob {}", blob_digest);
                         log.info(&msg);
                     }
                     Err(_) => {
-                        let msg = format!("reading blob {}", &blob.blob_sum);
+                        let msg = format!("reading blob {}", url.clone());
                         log.error(&msg);
                     }
                 },
                 Err(_) => {
-                    let msg = format!("downloading blob {}", &blob.blob_sum);
+                    let msg = format!("downloading blob {}", &url);
                     log.error(&msg);
                 }
             }
@@ -111,6 +114,7 @@ pub async fn get_blobs(
     .collect::<Vec<()>>();
     log.debug("downloading blobs...");
     fetches.await;
+    String::from("ok")
 }
 
 // construct the blobs url
@@ -145,7 +149,7 @@ pub fn get_blobs_url_by_string(img: String) -> String {
 
 // construct blobs dir
 pub fn get_blobs_dir(dir: String, name: &str) -> String {
-    //let mut file = String::from("working-dir/blobs-store/");
+    // originally working-dir/blobs-store
     let mut file = dir.clone();
     file.push_str(&name[..2]);
     file.push_str(&"/");
@@ -154,11 +158,137 @@ pub fn get_blobs_dir(dir: String, name: &str) -> String {
 
 // construct blobs file
 pub fn get_blobs_file(dir: String, name: &str) -> String {
-    //let mut file = String::from("working-dir/blobs-store/");
+    // originally working-dir/blobs-store
     let mut file = dir.clone();
     file.push_str("/");
     file.push_str(&name[..2]);
     file.push_str(&"/");
     file.push_str(&name);
     file
+}
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+
+    #[test]
+    fn get_manifest_pass() {
+        let mut server = mockito::Server::new();
+        let url = server.url();
+
+        // Create a mock
+        server
+            .mock("GET", "/manifests")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{ \"test\": \"hello-world\" }")
+            .create();
+
+        let res = aw!(get_manifest(url + "/manifests", String::from("token")));
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), String::from("{ \"test\": \"hello-world\" }"));
+    }
+
+    #[test]
+    fn get_blobs_pass() {
+        let mut server = mockito::Server::new();
+        let url = server.url();
+
+        // Create a mock
+        server
+            .mock("GET", "/sha256:1234567890")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{ \"test\": \"hello-world\" }")
+            .create();
+
+        let fslayer = FsLayer {
+            blob_sum: String::from("sha256:1234567890"),
+            original_ref: Some(url.clone()),
+            result: Some(String::from("")),
+        };
+        let fslayers = vec![fslayer];
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        // test with url set first
+        aw!(get_blobs(
+            log,
+            String::from("test-artifacts/test-blobs-store/"),
+            url.clone() + "/",
+            String::from("token"),
+            fslayers.clone(),
+        ));
+        // check the file contents
+        let s = fs::read_to_string("test-artifacts/test-blobs-store/12/1234567890")
+            .expect("should read file");
+        assert_eq!(s, "{ \"test\": \"hello-world\" }");
+        fs::remove_dir_all("test-artifacts/test-blobs-store").expect("should delete");
+    }
+
+    #[test]
+    fn get_blobs_file_pass() {
+        let res = get_blobs_file(
+            String::from("test-artifacts/index-manifest/v1/blobs-store"),
+            "1234567890",
+        );
+        assert_eq!(
+            res,
+            String::from("test-artifacts/index-manifest/v1/blobs-store/12/1234567890")
+        );
+    }
+
+    #[test]
+    fn get_blobs_dir_pass() {
+        let res = get_blobs_dir(
+            String::from("test-artifacts/index-manifest/v1/blobs-store/"),
+            "1234567890",
+        );
+        assert_eq!(
+            res,
+            String::from("test-artifacts/index-manifest/v1/blobs-store/12/")
+        );
+    }
+
+    #[test]
+    fn get_blobs_url_by_string_pass() {
+        let res = get_blobs_url_by_string(String::from(
+            "test.registry.io/test/some-operator@sha256:1234567890",
+        ));
+        assert_eq!(
+            res,
+            String::from("https://test.registry.io/v2/test/some-operator/blobs/")
+        );
+    }
+
+    #[test]
+    fn get_blobs_url_pass() {
+        let pkg = Package {
+            name: String::from("some-operator"),
+            channels: None,
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let pkgs = vec![pkg];
+        let ir = ImageReference {
+            registry: String::from("test.registry.io"),
+            namespace: String::from("test"),
+            name: String::from("some-operator"),
+            version: String::from("v1.0.0"),
+            packages: pkgs,
+        };
+        let res = get_blobs_url(ir);
+        assert_eq!(
+            res,
+            String::from("https://test.registry.io/v2/test/some-operator/blobs/")
+        );
+    }
 }

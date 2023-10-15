@@ -130,6 +130,7 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                                 let fslayer = FsLayer {
                                     blob_sum: layer.digest.clone(),
                                     original_ref: Some(imgs.image.clone()),
+                                    result: Some(String::from("")),
                                 };
                                 fslayers.insert(0, fslayer);
                             }
@@ -137,6 +138,7 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                             let cfg = FsLayer {
                                 blob_sum: op_manifest.config.unwrap().digest,
                                 original_ref: Some(imgs.image.clone()),
+                                result: Some(String::from("")),
                             };
                             fslayers.insert(0, cfg);
                         }
@@ -153,6 +155,7 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                         let fslayer = FsLayer {
                             blob_sum: layer.digest.clone(),
                             original_ref: Some(imgs.image.clone()),
+                            result: Some(String::from("")),
                         };
                         fslayers.insert(0, fslayer);
                     }
@@ -160,6 +163,7 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                     let cfg = FsLayer {
                         blob_sum: op_manifest.config.unwrap().digest,
                         original_ref: Some(imgs.image.clone()),
+                        result: Some(String::from("")),
                     };
                     fslayers.insert(0, cfg);
                 }

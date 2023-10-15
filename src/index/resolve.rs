@@ -149,14 +149,17 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:a48865"),
             original_ref: Some(String::from("test-a4")),
+            result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:b4385e"),
             original_ref: Some(String::from("test-b4")),
+            result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
-        fs::remove_dir_all("./test-artifacts/index-manifest/v1/new-cache");
+        fs::remove_dir_all("./test-artifacts/index-manifest/v1/new-cache")
+            .expect("should delete all test directories");
         aw!(untar_layers(
             log,
             String::from("./test-artifacts/index-manifest/v1/blobs-store"),
