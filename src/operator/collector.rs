@@ -8,7 +8,13 @@ use crate::manifests::catalogs::*;
 use std::fs;
 
 // collect all operator images
-pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>) {
+pub async fn mirror_to_disk<T: RegistryInterface>(
+    reg_con: T,
+    log: &Logging,
+    dir: String,
+    token_url: String,
+    operator: Vec<Operator>,
+) {
     log.info("operator collector mode: mirrorToDisk");
 
     // parse the config - iterate through each catalog
@@ -23,29 +29,34 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
             ir.version.clone(),
         );
         log.trace(&format!("manifest json file {}", manifest_json));
-        let token = get_token(log, ir.registry.clone()).await;
+        let token = get_token(log, ir.registry.clone(), token_url.clone()).await;
         // use token to get manifest
         let manifest_url = get_image_manifest_url(ir.clone());
-        let manifest = get_manifest(manifest_url.clone(), token.clone())
+        let manifest = reg_con
+            .get_manifest(manifest_url.clone(), token.clone())
             .await
             .unwrap();
 
         // create the full path
         // TODO:
-        // fs::create_dir_all(manifest_json.clone()).expect("unable to create directory");
-        fs::write(manifest_json, manifest.clone()).expect("unable to write file");
+        let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
+        log.info(&format!("manifest directory {}", manifest_dir));
+        fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
+        fs::write(manifest_json, manifest.clone())
+            .expect("unable to write (index) manifest.json file");
         let res = parse_json_manifest(manifest).unwrap();
         let blobs_url = get_blobs_url(ir.clone());
         // use a concurrent process to get related blobs
         let sub_dir = dir.clone() + "/blobs-store/";
-        get_blobs(
-            log,
-            sub_dir.clone(),
-            blobs_url,
-            token.clone(),
-            res.fs_layers.clone(),
-        )
-        .await;
+        reg_con
+            .get_blobs(
+                log,
+                sub_dir.clone(),
+                blobs_url,
+                token.clone(),
+                res.fs_layers.clone(),
+            )
+            .await;
         log.info("completed image index download");
 
         let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
@@ -88,11 +99,13 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                 //let file = op_dir.clone() + "/manifest.json";
                 //if !Path::new(&file).exists() {
                 let manifest_url = get_manifest_url(imgs.image.clone());
-                log.trace(&format!("image url {:#?}", manifest_url));
-                let manifest = get_manifest(manifest_url.clone(), token.clone())
+                log.trace(&format!("manifest url {:#?}", manifest_url));
+                // use the RegistryInterface to make the call
+                let manifest = reg_con
+                    .get_manifest(manifest_url.clone(), token.clone())
                     .await
                     .unwrap();
-                log.trace(&format!("manifest {:#?}", manifest));
+                log.trace(&format!("manifest contents {:#?}", manifest));
                 // check if the manifest is of type list
                 let manifest_list = parse_json_manifestlist(manifest.clone());
                 fs::create_dir_all(&op_dir).expect("unable to create operator manifest directory");
@@ -110,10 +123,12 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                                 imgs.image.clone(),
                                 mf.digest.clone().unwrap(),
                             );
-                            let local_manifest =
-                                get_manifest(sub_manifest_url.clone(), token.clone())
-                                    .await
-                                    .unwrap();
+                            log.trace(&format!("sub manifest url {:#?}", sub_manifest_url.clone()));
+                            // use the RegistryInterface to make the api call
+                            let local_manifest = reg_con
+                                .get_manifest(sub_manifest_url.clone(), token.clone())
+                                .await
+                                .unwrap();
 
                             fs::write(
                                 op_dir.clone()
@@ -123,6 +138,10 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                                 local_manifest.clone(),
                             )
                             .expect("unable to write file");
+                            log.trace(&format!(
+                                "local manifest (from sub manifest url) {:#?}",
+                                local_manifest.clone()
+                            ));
                             // convert op_manifest.layer to FsLayer and add it to the collection
                             let op_manifest =
                                 parse_json_manifest_operator(local_manifest.clone()).unwrap();
@@ -168,14 +187,15 @@ pub async fn mirror_to_disk(log: &Logging, dir: String, operator: Vec<Operator>)
                     fslayers.insert(0, cfg);
                 }
                 let op_url = get_blobs_url_by_string(imgs.image.clone());
-                get_blobs(
-                    log,
-                    sub_dir.clone(),
-                    op_url,
-                    token.clone(),
-                    fslayers.clone(),
-                )
-                .await;
+                reg_con
+                    .get_blobs(
+                        log,
+                        sub_dir.clone(),
+                        op_url,
+                        token.clone(),
+                        fslayers.clone(),
+                    )
+                    .await;
             }
         }
     }
@@ -287,4 +307,287 @@ fn get_operator_manifest_json_dir(
     file.push_str(&"/");
     file.push_str(&channel);
     file
+}
+
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+    use async_trait::async_trait;
+
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+
+    #[test]
+    fn get_operator_manfifest_json_dir_pass() {
+        let res = get_operator_manifest_json_dir(
+            String::from("test-artifacts/"),
+            String::from("test-index"),
+            String::from("v1.0"),
+            String::from("some-operator"),
+            String::from("stable"),
+        );
+        assert_eq!(
+            res,
+            String::from("test-artifacts/test-index/v1.0/operators/some-operator/stable")
+        );
+    }
+
+    #[test]
+    fn get_operator_name_pass() {
+        let res = get_operator_name(String::from(
+            "test.registry.io/test/some-operator@sha256:1234567890",
+        ));
+        assert_eq!(res, String::from("test/some-operator"));
+    }
+
+    #[test]
+    fn get_related_images_from_catalog_with_channel_pass() {
+        let log = &Logging {
+            log_level: Level::TRACE,
+        };
+        let ic = IncludeChannel {
+            name: String::from("alpha"),
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let ics = vec![ic];
+        let pkg = Package {
+            name: String::from("some-operator"),
+            channels: Some(ics),
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let pkgs = vec![pkg];
+
+        let ir1 = RelatedImage {
+            name: String::from("controller"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:d7bc364512178c36671d8a4b5a76cf7cb10f8e56997106187b0fe1f032670ece"),
+        };
+        let ir2 = RelatedImage {
+            name: String::from(""),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:50b9402635dd4b312a86bed05dcdbda8c00120d3789ec2e9b527045100b3bdb4"),
+        };
+        let ir3 = RelatedImage {
+            name: String::from("aws-load-balancer-rhel8-operator-95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d-annotation"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"),
+        };
+        let ir4 = RelatedImage {
+            name: String::from("manager"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"),
+        };
+        let ir5 = RelatedImage {
+            name: String::from("kube-rbac-proxy"),
+            image: String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:3658954f199040b0f244945c94955f794ee68008657421002e1b32962e7c30fc"),
+        };
+        let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
+        let wrapper = RelatedImageWrapper {
+            images: ri_vec,
+            channel: String::from("alpha"),
+        };
+        let wrapper_vec = vec![wrapper];
+        let res = get_related_images_from_catalog(
+            log,
+            String::from("test-artifacts/test-index-operator/v1.0/cache/b4385e/configs/"),
+            pkgs,
+        );
+        log.trace(&format!("results {:#?}", res));
+        let matching = res
+            .iter()
+            .zip(&wrapper_vec)
+            .filter(|&(res, wrapper)| res.images.len() == wrapper.images.len())
+            .count();
+        assert_eq!(matching, 1);
+        for x in res.iter() {
+            assert_eq!(x.images[0].image, String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:d7bc364512178c36671d8a4b5a76cf7cb10f8e56997106187b0fe1f032670ece"));
+            assert_eq!(x.images[1].image, String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:50b9402635dd4b312a86bed05dcdbda8c00120d3789ec2e9b527045100b3bdb4"));
+            assert_eq!(x.images[2].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"));
+            assert_eq!(x.images[3].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"));
+            assert_eq!(x.images[4].image, String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:3658954f199040b0f244945c94955f794ee68008657421002e1b32962e7c30fc"));
+        }
+    }
+
+    #[test]
+    fn get_related_images_from_catalog_no_channel_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let pkg = Package {
+            name: String::from("some-operator"),
+            channels: None,
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+        let pkgs = vec![pkg];
+
+        let ir1 = RelatedImage {
+            name: String::from("controller"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92"),
+        };
+        let ir2 = RelatedImage {
+            name: String::from(""),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d"),
+        };
+        let ir3 = RelatedImage {
+            name: String::from("aws-load-balancer-rhel8-operator-95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d-annotation"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"),
+        };
+        let ir4 = RelatedImage {
+            name: String::from("manager"),
+            image: String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"),
+        };
+        let ir5 = RelatedImage {
+            name: String::from("kube-rbac-proxy"),
+            image: String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6"),
+        };
+        let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
+        let wrapper = RelatedImageWrapper {
+            images: ri_vec,
+            channel: String::from("stable-v1"),
+        };
+        let wrapper_vec = vec![wrapper];
+        let res = get_related_images_from_catalog(
+            log,
+            String::from("test-artifacts/test-index-operator/v1.0/cache/b4385e/configs/"),
+            pkgs,
+        );
+        log.trace(&format!("results {:#?}", res));
+        let matching = res
+            .iter()
+            .zip(&wrapper_vec)
+            .filter(|&(res, wrapper)| res.images.len() == wrapper.images.len())
+            .count();
+        assert_eq!(matching, 1);
+        for x in res.iter() {
+            assert_eq!(x.images[0].image, String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92"));
+            assert_eq!(x.images[1].image, String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d"));
+            assert_eq!(x.images[2].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"));
+            assert_eq!(x.images[3].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"));
+            assert_eq!(x.images[4].image, String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6"));
+        }
+    }
+
+    #[test]
+    fn mirror_to_disk_pass() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+
+        // we set up a mock server for the auth-credentials
+        let mut server = mockito::Server::new();
+        let url = server.url();
+
+        // Create a mock
+        server
+            .mock("GET", "/auth")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                "{ 
+                    \"token\": \"test\", 
+                    \"access_token\": \"aebcdef1234567890\", 
+                    \"expires_in\":300,
+                    \"issued_at\":\"2023-10-20T13:23:31Z\"  
+                }",
+            )
+            .create();
+
+        let pkg = Package {
+            name: String::from("some-operator"),
+            channels: None,
+            min_version: None,
+            max_version: None,
+            min_bundle: None,
+        };
+
+        let pkgs = vec![pkg];
+        let op = Operator {
+            catalog: String::from("test.registry.io/test/test-index-operator:v1.0"),
+            packages: Some(pkgs),
+        };
+
+        struct Fake {}
+
+        #[async_trait]
+        impl RegistryInterface for Fake {
+            async fn get_manifest(
+                &self,
+                url: String,
+                _token: String,
+            ) -> Result<String, Box<dyn std::error::Error>> {
+                let mut content = String::from("");
+
+                if url.contains("test-index-operator") {
+                    content =
+                        fs::read_to_string("test-artifacts/test-index-operator/v1.0/manifest.json")
+                            .expect("should read operator-index manifest file")
+                }
+                if url.contains("cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92")
+                {
+                    content =
+                        fs::read_to_string("test-artifacts/simulate-api-call/manifest-list.json")
+                            .expect("should read test (albo) controller manifest-list file");
+                }
+                if url.contains("75012e910726992f70c892b11e50e409852501c64903fa05fa68d89172546d5d")
+                    | url.contains(
+                        "5e03f571c5993f0853a910b7c0cab44ec0e451b94a9677ed82e921b54a4b735a",
+                    )
+                {
+                    content =
+                        fs::read_to_string("test-artifacts/simulate-api-call/manifest-amd64.json")
+                            .expect("should read test (albo) controller manifest-am64 file");
+                }
+                if url.contains("d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d")
+                {
+                    content = fs::read_to_string("test-artifacts/simulate-api-call/manifest.json")
+                        .expect("should read test (albo) bundle manifest file");
+                }
+                if url.contains("cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0")
+                {
+                    content = fs::read_to_string(
+                        "test-artifacts/simulate-api-call/manifest-amd64-operator.json",
+                    )
+                    .expect("should read test (albo) operator manifest file");
+                }
+                if url.contains("422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6")
+                {
+                    content = fs::read_to_string(
+                        "test-artifacts/simulate-api-call/manifest-amd64-kube.json",
+                    )
+                    .expect("should read test (openshift) kube-proxy manifest file");
+                }
+
+                Ok(content)
+            }
+
+            async fn get_blobs(
+                &self,
+                log: &Logging,
+                _dir: String,
+                _url: String,
+                _token: String,
+                _layers: Vec<FsLayer>,
+            ) -> String {
+                log.info("testing logging in fake test");
+                String::from("test")
+            }
+        }
+
+        let fake = Fake {};
+
+        let ops = vec![op];
+        aw!(mirror_to_disk(
+            fake,
+            log,
+            String::from("test-artifacts/"),
+            String::from(url + "/auth"),
+            ops
+        ));
+    }
 }

@@ -46,7 +46,7 @@ async fn main() {
 
     if args.diff_tar.unwrap() {
         if args.date.clone().unwrap().len() == 0 {
-            current_cache = get_metadata_dirs_incremental(log);
+            current_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
             log.mid(&format!("current cache {:#?} ", current_cache));
         }
     }
@@ -61,10 +61,13 @@ async fn main() {
 
     // TODO: call release collector
 
-    // call operator collector
+    let reg_con = ImplRegistryInterface {};
+
     mirror_to_disk(
+        reg_con,
         log,
         String::from("./working-dir/"),
+        String::from(""),
         isc_config.mirror.operators.unwrap(),
     )
     .await;
@@ -76,15 +79,22 @@ async fn main() {
         let mut new_cache = HashSet::new();
         log.trace(&format!("new cache {:#?}", new_cache));
         if args.date.clone().unwrap().len() > 0 {
-            new_cache = get_metadata_dirs_by_date(log, args.date.unwrap());
+            new_cache =
+                get_metadata_dirs_by_date(log, String::from("working-dir/"), args.date.unwrap());
         } else {
-            new_cache = get_metadata_dirs_incremental(log);
+            new_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
         }
         let diff: Vec<_> = new_cache.difference(&current_cache).collect();
         log.mid(&format!("difference {:#?}", diff));
         if diff.len() > 0 {
             log.info("creating mirror_diff.tar.gz");
-            let res = create_diff_tar(log, diff, config);
+            let res = create_diff_tar(
+                log,
+                String::from("mirror-diff.tar.gz"),
+                String::from("working-dir/blobs-store"),
+                diff,
+                config,
+            );
             match res {
                 Ok(_) => log.info("mirror-diff.tar.gz successfully created"),
                 Err(err) => log.error(&format!("errror creating diff tar {:#?}", err)),

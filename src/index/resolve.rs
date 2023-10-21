@@ -14,7 +14,7 @@ use crate::log::logging::*;
 // untar layers in directory denoted by parameter 'dir'
 pub async fn untar_layers(
     log: &Logging,
-    blobs_store: String,
+    blobs_dir: String,
     cache_dir: String,
     layers: Vec<FsLayer>,
 ) {
@@ -34,11 +34,11 @@ pub async fn untar_layers(
     for path in images.iter() {
         let blob = path.split(":").nth(1).unwrap();
         let cache_file = cache_dir.clone() + "/" + &blob[..6];
-        log.trace(&format!("cache file {}", cache_file));
+        log.trace(&format!("cache file {}", cache_file.clone()));
         if !Path::new(&cache_file).exists() {
-            let file = get_blobs_file(blobs_store.clone(), blob);
+            let file = get_blobs_file(blobs_dir.clone(), blob);
             log.trace(&format!("blobs file {}", file));
-            let tar_gz = File::open(file).expect("could not open file");
+            let tar_gz = File::open(file.clone()).expect("could not open file");
             let tar = GzDecoder::new(tar_gz);
             let mut archive = Archive::new(tar);
             // should always be a sha256 string
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn untar_layers_pass() {
         let log = &Logging {
-            log_level: Level::INFO,
+            log_level: Level::TRACE,
         };
         let mut vec_layers = vec![];
         let fslayer = FsLayer {
@@ -158,13 +158,12 @@ mod tests {
             result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
-        fs::remove_dir_all("./test-artifacts/index-manifest/v1/new-cache")
-            .expect("should delete all test directories");
         aw!(untar_layers(
             log,
-            String::from("./test-artifacts/index-manifest/v1/blobs-store"),
-            String::from("./test-artifacts/index-manifest/v1/new-cache"),
+            String::from("test-artifacts/raw-tar-files"),
+            String::from("test-artifacts/new-cache"),
             vec_layers,
         ));
+        fs::remove_dir_all("test-artifacts/new-cache").expect("should delete all test directories");
     }
 }

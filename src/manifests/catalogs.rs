@@ -157,7 +157,9 @@ mod tests {
 
     #[test]
     fn read_operator_catalog_pass() {
-        let res = read_operator_catalog(String::from("./test-artifacts/operator"));
+        let res = read_operator_catalog(String::from(
+            "test-artifacts/test-index-operator/v1.0/cache/b4385e/configs/some-operator",
+        ));
         assert!(res.is_ok());
     }
 
@@ -168,7 +170,7 @@ mod tests {
         };
         let res = aw!(find_dir(
             log,
-            String::from("./test-artifacts/index-manifest/v1/cache"),
+            String::from("test-artifacts/test-index-operator/v1.0/cache"),
             String::from("configs"),
         ));
         assert_ne!(res, String::from(""));
@@ -177,7 +179,7 @@ mod tests {
     #[test]
     fn parse_json_manifest_pass() {
         let contents = fs::read_to_string(String::from(
-            "./test-artifacts/index-manifest/v1/manifest.json",
+            "test-artifacts/test-index-operator/v1.0/manifest.json",
         ))
         .expect("Should have been able to read the file");
         let res = parse_json_manifest(contents);
@@ -187,7 +189,7 @@ mod tests {
     #[test]
     fn parse_json_manifest_operator_pass() {
         let contents = fs::read_to_string(String::from(
-            "./test-artifacts/operator/manifest-amd64.json",
+            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1/manifest-amd64.json",
         ))
         .expect("Should have been able to read the file");
         let res = parse_json_manifest_operator(contents);
@@ -196,9 +198,10 @@ mod tests {
 
     #[test]
     fn parse_json_manifestlist_pass() {
-        let contents =
-            fs::read_to_string(String::from("./test-artifacts/operator/manifest-list.json"))
-                .expect("Should have been able to read the file");
+        let contents = fs::read_to_string(String::from(
+            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1/manifest-list.json",
+        ))
+        .expect("Should have been able to read the file");
         let res = parse_json_manifestlist(contents);
         assert!(res.is_ok());
     }

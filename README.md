@@ -1,5 +1,7 @@
 ## Overview
 
+![Badges](assets/flat.svg)
+
 This is a simple POC that mirrors ocp/okd release, operator and additional images in dockerv2 format (from a registry) to disk 
 and from disk to mirror
 
@@ -146,13 +148,17 @@ rustup component add llvm-tools-preview
 execute the tests
 
 ```
-CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test
+# add the -- --nocapture or --show-ouput flags to see println! statements
+$ CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test
+
+# for individual tests
+$ CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test create_diff_tar_pass -- --show-output
 ```
 
 check the code coverage
 
 ```
-$ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-existing --ignore '../*' --ignore "/*" -o target/coverage/html
+$ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-existing --ignore '../*' --ignore "/*" --ignore "src/main.rs" -o target/coverage/html
 
 ```
 

@@ -1,7 +1,7 @@
 use crate::log::logging::*;
 use crate::manifests::catalogs::parse_json_manifest_operator;
 use chrono::NaiveDateTime;
-use exitcode;
+// use exitcode;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::HashSet;
@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use tempdir::TempDir;
 use walkdir::WalkDir;
 
-pub fn get_metadata_dirs_by_date(log: &Logging, date: String) -> HashSet<String> {
+pub fn get_metadata_dirs_by_date(log: &Logging, dir: String, date: String) -> HashSet<String> {
     let mut valid_dirs = HashSet::new();
     let new_date = date + &String::from(" 00:00:00");
     log.info(&format!("date {:#?}", new_date));
@@ -21,13 +21,14 @@ pub fn get_metadata_dirs_by_date(log: &Logging, date: String) -> HashSet<String>
         Ok(val) => val,
         Err(_) => {
             log.error("date expected to be in yyyy/mm/dd format");
-            std::process::exit(exitcode::USAGE);
+            //std::process::exit(exitcode::USAGE);
+            panic!("date format is incorrect, unable to continue")
         }
     };
 
     let date_unix = NaiveDateTime::timestamp(&date_only.unwrap());
     log.info(&format!("date unix {:#?}", date_unix));
-    for e in WalkDir::new("working-dir/".to_string())
+    for e in WalkDir::new(dir.clone().to_string())
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -56,12 +57,9 @@ pub fn get_metadata_dirs_by_date(log: &Logging, date: String) -> HashSet<String>
     valid_dirs
 }
 
-pub fn get_metadata_dirs_incremental(log: &Logging) -> HashSet<String> {
+pub fn get_metadata_dirs_incremental(log: &Logging, dir: String) -> HashSet<String> {
     let mut valid_dirs = HashSet::new();
-    for e in WalkDir::new("working-dir/".to_string())
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for e in WalkDir::new(dir.clone()).into_iter().filter_map(|e| e.ok()) {
         if e.path().is_dir() {
             let dir = e.path().display().to_string();
             if (dir.contains("operators") || dir.contains("release"))
@@ -78,28 +76,32 @@ pub fn get_metadata_dirs_incremental(log: &Logging) -> HashSet<String> {
 
 pub fn create_diff_tar(
     log: &Logging,
+    tar_file: String,
+    base_dir: String,
     dirs: Vec<&std::string::String>,
     config: String,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let tmp_dir = TempDir::new("tmp-diff-tar")?;
-    let from_base = String::from("working-dir/blobs-store/");
+    // working-dir/blobs-store
+    let from_base = base_dir.clone();
     fs::create_dir_all(tmp_dir.path().join("metadata"))?;
     fs::create_dir_all(tmp_dir.path().join("blobs"))?;
     for x in dirs {
         // open the manifest file/s (could be more than one - multiarch)
         log.info(&format!("component directory {:#?}", x.to_string()));
         fs::create_dir_all(tmp_dir.path().join(x.to_string()))?;
+        log.trace(&format!("each dir vector {}", x));
+
         for entry in fs::read_dir(x.to_string())? {
             let entry = entry?;
             let path = entry.path();
             let from = path.clone().into_os_string().into_string().unwrap();
             let to = tmp_dir.path().join(from.clone());
-            // copy the manifest
-            fs::copy(from.clone(), to)?;
+            fs::copy(from.clone(), to).unwrap();
             // parse the file contents, read it into a Manifest struct
             let s = fs::read_to_string(from.clone())?;
-            log.trace(&format!("from {}", from));
-            if !from.contains("list") {
+            if !from.contains("list") & !from.contains("catalog") {
+                log.trace(&format!("from {}", from));
                 let mnfst = parse_json_manifest_operator(s.clone()).unwrap();
                 for layer in mnfst.layers.unwrap().iter() {
                     let digest = layer.digest.split(":").nth(1).unwrap();
@@ -108,26 +110,109 @@ pub fn create_diff_tar(
                     let from = from_base.clone() + &digest[..2] + &String::from("/") + digest;
                     let to = tmp_dir.path().join(&to_dir);
                     log.trace(&format!("copy from {:#?} to {:#?}", from, to));
-                    fs::copy(from, to)?;
+                    fs::copy(from, to).unwrap();
                 }
-                let mnfst_config = mnfst.config.unwrap();
-                let cfg_digest = mnfst_config.digest.split(":").nth(1).unwrap();
-                log.lo(&format!("config to copy {:#?}", cfg_digest));
-                let from = from_base.clone() + &cfg_digest[..2] + &String::from("/") + cfg_digest;
-                let to_dir = String::from("blobs/") + cfg_digest;
-                let to = tmp_dir.path().join(&to_dir);
-                fs::copy(from, to)?;
+                if mnfst.config.is_some() {
+                    let mnfst_config = mnfst.config.unwrap();
+                    let cfg_digest = mnfst_config.digest.split(":").nth(1).unwrap();
+                    log.lo(&format!("config to copy {:#?}", cfg_digest));
+                    let from =
+                        from_base.clone() + &cfg_digest[..2] + &String::from("/") + cfg_digest;
+                    let to_dir = String::from("blobs/") + cfg_digest;
+                    let to = tmp_dir.path().join(&to_dir);
+                    log.trace(&format!("copy from {:#?} to {:#?}", from, to));
+                    fs::copy(from, to).unwrap();
+                    log.trace("config copied to tmp dir");
+                }
             }
         }
     }
+
+    log.trace("building tar ball ....");
     // finally copy over the current imagesetconfig used
-    fs::write(tmp_dir.path().join("metadata/isc.yaml"), config)?;
+    fs::write(tmp_dir.path().join("metadata/isc.yaml"), config.clone())
+        .expect("should write isc.yaml file");
+    log.trace(&format!("imagesetconfig written {}", config));
     // create the tar
-    let tar_gz = File::create("mirror_diff.tar.gz")?;
+    let tar_gz = File::create(tar_file.clone()).unwrap();
     let enc = GzEncoder::new(tar_gz, Compression::default());
     let mut tar = tar::Builder::new(enc);
     // add all the contents to the tar
-    tar.append_dir_all(".", tmp_dir.path())?;
-    tmp_dir.close()?;
+    tar.append_dir_all(".", tmp_dir.path()).unwrap();
+    tmp_dir.close().unwrap();
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+
+    // this brings everything from parent's scope into this scope
+    use super::*;
+
+    #[test]
+    fn get_metadata_dirs_incremental_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let mut hs = HashSet::new();
+        hs.insert(String::from(
+            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1",
+        ));
+        let res = get_metadata_dirs_incremental(
+            log,
+            String::from("test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1"),
+        );
+        assert_eq!(res, hs);
+    }
+
+    #[test]
+    fn get_metadata_dirs_by_date_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let mut hs = HashSet::new();
+        hs.insert(String::from(
+            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1",
+        ));
+        let res = get_metadata_dirs_by_date(
+            log,
+            String::from("test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1"),
+            String::from("2023/08/01"),
+        );
+        assert_eq!(res, hs);
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_metadata_dirs_by_date_fail() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let mut hs = HashSet::new();
+        hs.insert(String::from("test-artifacts/operators"));
+        let res =
+            get_metadata_dirs_by_date(log, String::from("test-artifacts"), String::from("/08/01"));
+        assert_eq!(res, hs);
+    }
+
+    #[test]
+    fn create_diff_tar_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+        let mnfst_dir =
+            &"test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1/".to_string();
+        let files = vec![mnfst_dir];
+        let res = create_diff_tar(
+            log,
+            String::from("test-diff.tar.gz"),
+            String::from("test-artifacts/blobs-store/"),
+            files.clone(),
+            String::from("imagesetconfig"),
+        );
+        let exists = fs::metadata("test-diff.tar.gz").is_ok();
+        assert_eq!(exists, true);
+        fs::remove_file("test-diff.tar.gz").expect("should delete file");
+        log.info(&format!("return value {:#?}", res));
+    }
 }

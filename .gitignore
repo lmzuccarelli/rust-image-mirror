@@ -3,3 +3,4 @@ working-dir/
 blob-store/
 mirror_diff/
 *.tar.gz
+cargo-test*

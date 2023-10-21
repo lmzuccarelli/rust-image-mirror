@@ -65,9 +65,10 @@ pub async fn get_auth_json(
 }
 
 // process all relative functions in this module to actaully get the token
-pub async fn get_token(log: &Logging, name: String) -> String {
+pub async fn get_token(log: &Logging, name: String, url: String) -> String {
     let token_url = match name.as_str() {
         "registry.redhat.io" => "https://sso.redhat.com/auth/realms/rhcc/protocol/redhat-docker-v2/auth?service=docker-registry&client_id=curl&scope=repository:rhel:pull".to_string(),
+        "test.registry.io" => url.clone(),
         &_ => "none".to_string(),
     };
     // get creds from $XDG_RUNTIME_DIR
@@ -112,7 +113,11 @@ mod tests {
         let log = &Logging {
             log_level: Level::DEBUG,
         };
-        let res = aw!(get_token(log, String::from("registry.redhat.io")));
+        let res = aw!(get_token(
+            log,
+            String::from("registry.redhat.io"),
+            String::from("")
+        ));
         assert!(res.to_string() != String::from(""));
     }
 
@@ -132,6 +137,15 @@ mod tests {
     #[serial]
     fn test_get_credentials_pass() {
         env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        let res = get_credentials();
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic]
+    fn test_get_credentials_nofile_fail() {
+        env::set_var("XDG_RUNTIME_DIR", "/run/");
         let res = get_credentials();
         assert!(res.is_ok());
     }

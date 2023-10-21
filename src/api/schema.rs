@@ -1,8 +1,11 @@
 // module schema
 
+use async_trait::async_trait;
 use clap::Parser;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
+
+use crate::log::logging::*;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ManifestList {
@@ -417,4 +420,26 @@ pub struct ImageReference {
     pub name: String,
     pub version: String,
     pub packages: Vec<Package>,
+}
+
+pub struct ImplRegistryInterface {}
+
+#[async_trait]
+pub trait RegistryInterface {
+    // used to interact with container registry (manifest calls)
+    async fn get_manifest(
+        &self,
+        url: String,
+        token: String,
+    ) -> Result<String, Box<dyn std::error::Error>>;
+
+    // used to interact with container registry (retrieve blobs)
+    async fn get_blobs(
+        &self,
+        log: &Logging,
+        dir: String,
+        url: String,
+        token: String,
+        layers: Vec<FsLayer>,
+    ) -> String;
 }
