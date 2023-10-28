@@ -6,6 +6,7 @@ use crate::log::logging::*;
 use crate::manifests::catalogs::*;
 
 use std::fs;
+use walkdir::WalkDir;
 
 // collect all operator images
 pub async fn mirror_to_disk<T: RegistryInterface>(
@@ -13,12 +14,12 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
     log: &Logging,
     dir: String,
     token_url: String,
-    operator: Vec<Operator>,
+    operators: Vec<Operator>,
 ) {
     log.info("operator collector mode: mirrorToDisk");
 
     // parse the config - iterate through each catalog
-    let img_ref = parse_image_index(log, operator);
+    let img_ref = parse_image_index(log, operators);
     log.debug(&format!("Image refs {:#?}", img_ref));
 
     for ir in img_ref {
@@ -80,21 +81,21 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
         ));
 
         let wrappers = get_related_images_from_catalog(log, config_dir, ir.packages.clone());
-        // log.trace(&format!("images from catalog for {:#?}", ir.packages));
+        log.debug(&format!("images from catalog for {:#?}", ir.packages));
 
         // iterate through all the related images
         for wrapper in wrappers.iter() {
             for imgs in wrapper.images.iter() {
                 // first check if the manifest exists
-                let op_name = get_operator_name(imgs.image.clone());
-                log.trace(&format!("operator name {:#?}", op_name));
-                let op_dir = get_operator_manifest_json_dir(
-                    dir.clone(),
-                    ir.name.clone(),
-                    ir.version.clone(),
-                    op_name.clone(),
+                let op_name = get_operator_name(
+                    wrapper.name.clone(),
+                    imgs.image.clone(),
                     wrapper.channel.clone(),
                 );
+                log.debug(&format!("operator name {:#?}", op_name));
+                let op_dir =
+                    get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &op_name);
+                fs::create_dir_all(op_dir.clone()).expect("should create full operator path");
                 log.debug(&format!("operator manifest path {:#?}", op_dir));
                 //let file = op_dir.clone() + "/manifest.json";
                 //if !Path::new(&file).exists() {
@@ -201,6 +202,95 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
     }
 }
 
+pub async fn disk_to_mirror<T: RegistryInterface>(
+    _reg_con: T,
+    log: &Logging,
+    dir: String,
+    _token_url: String,
+    operators: Vec<Operator>,
+) -> String {
+    // read isc catalogs, packages
+    // read all manifests and blobs from disk
+    // build the list
+    // call push_blobs
+    log.info("operator collector mode: diskToMirror");
+    for op in operators.iter() {
+        log.info(&format!("catalog {:#?} ", &op.catalog));
+        for pkg in op.packages.clone().unwrap().iter() {
+            log.info(&format!("packages {:#?} ", pkg));
+            let ir = get_registry_detials(&op.catalog);
+            // iterate through each directory in
+            // does it match with the pkg name
+            // if yes then lets see if channels are set
+
+            // with this info we can open the manifest to get all layers
+            let manifest_dir =
+                get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &pkg.name);
+            log.trace(&format!("manifest top level dir {:#?}", manifest_dir));
+            if pkg.channels.is_some() {
+                for channel in pkg.channels.clone().unwrap().iter() {
+                    log.info(&format!("channel {:#?}", channel));
+                    // read all manifests in sub directories for this operator and channel
+                    let _mfsts =
+                        get_all_manifests(log, manifest_dir.to_string() + "/" + &channel.name);
+                }
+            } else {
+                log.info("no channel");
+            }
+        }
+    }
+    String::from("ok")
+}
+
+fn get_all_manifests(log: &Logging, dir: String) -> String {
+    let paths = fs::read_dir(&dir);
+    // for both release & operator image indexes
+    // we know the layer we are looking for is only 1 level
+    // down from the parent
+    match paths {
+        Ok(res_paths) => {
+            for path in res_paths {
+                let entry = path.expect("could not resolve path entry");
+                let file = entry.path();
+                // go down one more level
+                // TODO: if there are more lower levels ?
+                let sub_paths = fs::read_dir(file).unwrap();
+                for sub_path in sub_paths {
+                    // TODO:
+                    // consider replacing this with walkdir
+                    let sub_entry = sub_path.expect("could not resolve sub path entry");
+                    let sub_name = sub_entry.path();
+                    let str_dir = sub_name.into_os_string().into_string().unwrap();
+                    log.trace(&format!("sub dir (operator manifests) {}", str_dir));
+                    for file in WalkDir::new(&str_dir)
+                        .into_iter()
+                        .filter_map(|file| file.ok())
+                    {
+                        // read and parse the manifest
+                        if file.metadata().unwrap().is_file()
+                            & file.path().display().to_string().contains("amd64")
+                        {
+                            let data = fs::read_to_string(file.path().display().to_string())
+                                .expect("should read various arch manifest files");
+                            let op_manifest = parse_json_manifest_operator(data);
+                            log.info(&format!(
+                                "manifest for {:#?} {:#?}",
+                                file.path().display().to_string(),
+                                op_manifest
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let msg = format!("{} ", error);
+            log.warn(&msg);
+        }
+    }
+    "ok".to_string()
+}
+
 fn get_related_images_from_catalog(
     log: &Logging,
     dir: String,
@@ -241,6 +331,7 @@ fn get_related_images_from_catalog(
                         if bundle_name == obj.name {
                             log.trace(&format!("bundle {:#?} {}", obj.related_images, obj.name));
                             let wrapper = RelatedImageWrapper {
+                                name: pkg.name.clone(),
                                 images: obj.related_images.clone().unwrap(),
                                 channel: chn.name.clone(),
                             };
@@ -257,6 +348,7 @@ fn get_related_images_from_catalog(
                     if bundle_name == obj.name {
                         log.trace(&format!("bundle {:#?} {}", obj.related_images, obj.name));
                         let wrapper = RelatedImageWrapper {
+                            name: pkg.name.clone(),
                             images: obj.related_images.clone().unwrap(),
                             channel: dc[0].default_channel.clone().unwrap(),
                         };
@@ -280,22 +372,27 @@ fn get_related_images_from_catalog(
 }
 
 // construct the operator namespace and name
-fn get_operator_name(img: String) -> String {
+fn get_operator_name(operator_name: String, img: String, channel: String) -> String {
     let mut parts = img.split("/");
     let _ = parts.nth(0).unwrap();
     let ns = parts.nth(0).unwrap();
     let name = parts.nth(0).unwrap();
     let mut op_name = name.split("@");
-    ns.to_string() + "/" + &op_name.nth(0).unwrap().to_owned()
+    operator_name.to_string()
+        + "/"
+        + &channel.clone()
+        + "/"
+        + &ns.to_string()
+        + "/"
+        + &op_name.nth(0).unwrap().to_owned()
 }
 
 // utility functions - get_operator_manifest_json_dir
 fn get_operator_manifest_json_dir(
     dir: String,
-    name: String,
-    version: String,
-    operator: String,
-    channel: String,
+    name: &str,
+    version: &str,
+    operator: &str,
 ) -> String {
     // ./working-dir
     let mut file = dir.clone();
@@ -304,9 +401,28 @@ fn get_operator_manifest_json_dir(
     file.push_str(&version);
     file.push_str(&"/operators/");
     file.push_str(&operator);
-    file.push_str(&"/");
-    file.push_str(&channel);
     file
+}
+
+fn get_registry_detials(reg: &str) -> ImageReference {
+    let mut ver = reg.split(":");
+    let mut hld = ver.nth(0).unwrap().split("/");
+    let pkg = Package {
+        name: String::from(""),
+        channels: None,
+        min_version: None,
+        max_version: None,
+        min_bundle: None,
+    };
+    let vec_pkg = vec![pkg];
+    let ir = ImageReference {
+        registry: hld.nth(0).unwrap().to_string(),
+        namespace: hld.nth(0).unwrap().to_string(),
+        name: hld.nth(0).unwrap().to_string(),
+        version: ver.nth(0).unwrap().to_string(),
+        packages: vec_pkg,
+    };
+    ir
 }
 
 #[cfg(test)]
@@ -325,23 +441,24 @@ mod tests {
     fn get_operator_manfifest_json_dir_pass() {
         let res = get_operator_manifest_json_dir(
             String::from("test-artifacts/"),
-            String::from("test-index"),
-            String::from("v1.0"),
-            String::from("some-operator"),
-            String::from("stable"),
+            &"test-index",
+            &"v1.0",
+            &"some-operator",
         );
         assert_eq!(
             res,
-            String::from("test-artifacts/test-index/v1.0/operators/some-operator/stable")
+            String::from("test-artifacts/test-index/v1.0/operators/some-operator")
         );
     }
 
     #[test]
     fn get_operator_name_pass() {
-        let res = get_operator_name(String::from(
-            "test.registry.io/test/some-operator@sha256:1234567890",
-        ));
-        assert_eq!(res, String::from("test/some-operator"));
+        let res = get_operator_name(
+            String::from("registry"),
+            String::from("test.registry.io/test/some-operator@sha256:1234567890"),
+            String::from("channel"),
+        );
+        assert_eq!(res, String::from("registry/channel/test/some-operator"));
     }
 
     #[test]
@@ -387,6 +504,7 @@ mod tests {
         };
         let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
         let wrapper = RelatedImageWrapper {
+            name: String::from("test"),
             images: ri_vec,
             channel: String::from("alpha"),
         };
@@ -448,6 +566,7 @@ mod tests {
         };
         let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
         let wrapper = RelatedImageWrapper {
+            name: String::from("test"),
             images: ri_vec,
             channel: String::from("stable-v1"),
         };
@@ -567,6 +686,18 @@ mod tests {
             }
 
             async fn get_blobs(
+                &self,
+                log: &Logging,
+                _dir: String,
+                _url: String,
+                _token: String,
+                _layers: Vec<FsLayer>,
+            ) -> String {
+                log.info("testing logging in fake test");
+                String::from("test")
+            }
+
+            async fn push_blobs(
                 &self,
                 log: &Logging,
                 _dir: String,

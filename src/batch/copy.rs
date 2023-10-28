@@ -117,6 +117,139 @@ impl RegistryInterface for ImplRegistryInterface {
         fetches.await;
         String::from("ok")
     }
+    // push each blob referred to by the vector in parallel
+    // set by the PARALLEL_REQUESTS value
+    async fn push_blobs(
+        &self,
+        log: &Logging,
+        dir: String,
+        url: String,
+        token: String,
+        layers: Vec<FsLayer>,
+    ) -> String {
+        // 1. first step is to post a blob
+        // POST /v2/<name>/blobs/uploads/
+        // if the POST request is successful, a 202 Accepted response will be returned with the upload URL in the Location header:
+        // 202 Accepted
+        // Location: /v2/<name>/blobs/uploads/<uuid>
+        // Range: bytes=0-<offset>
+        // Content-Length: 0
+        // Docker-Upload-UUID: <uuid>
+        //
+        // 2. check if the blob exists
+        // HEAD /v2/<name>/blobs/<digest>
+        // If the layer with the digest specified in digest is available, a 200 OK response will be received,
+        // with no actual body content (this is according to http specification). The response will look as follows:
+        // 200 OK
+        // Content-Length: <length of blob>
+        // Docker-Content-Digest: <digest>
+        //
+        // 3. if it does not exist do a put
+        // PUT /v2/<name>/blobs/uploads/<uuid>?digest=<digest>
+        // Content-Length: <size of layer>
+        // Content-Type: application/octet-stream
+        // 201 Created
+        // Location: /v2/<name>/blobs/<digest>
+        // Content-Length: 0
+        // Docker-Content-Digest: <digest>
+        //
+        // continue for each blob in the specifid container
+        //
+        // 4. Upload the manifest
+        // PUT /v2/<name>/manifests/<reference>
+        // Content-Type: <manifest media type>
+        /*
+          {
+            "name": <name>,
+            "tag": <tag>,
+            "fsLayers": [
+                {
+                    "blobSum": <digest>
+                },
+                ...
+            ],
+            "history": <v1 images>,
+            "signature": <JWS>,
+            ...
+            }
+        */
+
+        const PARALLEL_REQUESTS: usize = 8;
+        let client = Client::new();
+        let mut header_bearer: String = "Bearer ".to_owned();
+        header_bearer.push_str(&token);
+
+        // remove all duplicates in FsLayer
+        let mut images = Vec::new();
+        let mut seen = HashSet::new();
+        for img in layers.iter() {
+            // truncate sha256:
+            let truncated_image = img.blob_sum.split(":").nth(1).unwrap();
+            let inner_blobs_file = get_blobs_file(dir.clone(), &truncated_image);
+            let exist = Path::new(&inner_blobs_file).exists();
+            if !seen.contains(truncated_image) && !exist {
+                seen.insert(truncated_image);
+                if url == "" {
+                    let img_orig = img.original_ref.clone().unwrap();
+                    let img_ref = get_blobs_url_by_string(img_orig);
+                    let layer = FsLayer {
+                        blob_sum: img.blob_sum.clone(),
+                        original_ref: Some(img_ref),
+                        result: Some(String::from("")),
+                    };
+                    images.push(layer);
+                } else {
+                    let layer = FsLayer {
+                        blob_sum: img.blob_sum.clone(),
+                        original_ref: Some(url.clone()),
+                        result: Some(String::from("")),
+                    };
+                    images.push(layer);
+                }
+            }
+        }
+        log.trace(&format!("fslayers vector {:#?}", images));
+        let fetches = stream::iter(images.into_iter().map(|blob| {
+            let client = client.clone();
+            let url = blob.original_ref.unwrap().clone();
+            let header_bearer = header_bearer.clone();
+            let wrk_dir = dir.clone();
+            async move {
+                match client
+                    .get(url.clone() + &blob.blob_sum)
+                    .header("Authorization", header_bearer)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(bytes) => {
+                            let blob_digest = blob.blob_sum.split(":").nth(1).unwrap();
+                            let blob_dir = get_blobs_dir(wrk_dir.clone(), blob_digest);
+                            fs::create_dir_all(blob_dir.clone())
+                                .expect("unable to create blob directory");
+                            fs::write(blob_dir + &blob_digest, bytes.clone())
+                                .expect("unable to write blob");
+                            let msg = format!("writing blob {}", blob_digest);
+                            log.info(&msg);
+                        }
+                        Err(_) => {
+                            let msg = format!("reading blob {}", url.clone());
+                            log.error(&msg);
+                        }
+                    },
+                    Err(_) => {
+                        let msg = format!("downloading blob {}", &url);
+                        log.error(&msg);
+                    }
+                }
+            }
+        }))
+        .buffer_unordered(PARALLEL_REQUESTS)
+        .collect::<Vec<()>>();
+        log.debug("pushing blobs...");
+        fetches.await;
+        String::from("ok")
+    }
 }
 // construct the blobs url
 pub fn get_blobs_url(image_ref: ImageReference) -> String {

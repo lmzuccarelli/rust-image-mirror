@@ -107,7 +107,7 @@ pub fn create_diff_tar(
                     let digest = layer.digest.split(":").nth(1).unwrap();
                     log.hi(&format!("layer to copy {:#?}", digest));
                     let to_dir = String::from("blobs/") + digest;
-                    let from = from_base.clone() + &digest[..2] + &String::from("/") + digest;
+                    let from = from_base.clone() + "/" + &digest[..2] + &String::from("/") + digest;
                     let to = tmp_dir.path().join(&to_dir);
                     log.trace(&format!("copy from {:#?} to {:#?}", from, to));
                     fs::copy(from, to).unwrap();
@@ -116,8 +116,11 @@ pub fn create_diff_tar(
                     let mnfst_config = mnfst.config.unwrap();
                     let cfg_digest = mnfst_config.digest.split(":").nth(1).unwrap();
                     log.lo(&format!("config to copy {:#?}", cfg_digest));
-                    let from =
-                        from_base.clone() + &cfg_digest[..2] + &String::from("/") + cfg_digest;
+                    let from = from_base.clone()
+                        + "/"
+                        + &cfg_digest[..2]
+                        + &String::from("/")
+                        + cfg_digest;
                     let to_dir = String::from("blobs/") + cfg_digest;
                     let to = tmp_dir.path().join(&to_dir);
                     log.trace(&format!("copy from {:#?} to {:#?}", from, to));

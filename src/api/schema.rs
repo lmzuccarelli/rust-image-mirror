@@ -172,9 +172,18 @@ pub struct Cli {
     #[arg(long, value_name = "date", default_value = "")]
     pub date: Option<String>,
 
-    /// set the loglevel. Valid argumenst are info, debug, trace
+    /// set the loglevel. Valid arguments are info, debug, trace
     #[arg(value_enum, long, value_name = "loglevel", default_value = "info")]
     pub loglevel: Option<String>,
+
+    /// set the destination. Valid prefix are docker:// or file://
+    #[arg(
+        value_enum,
+        long,
+        value_name = "destination",
+        default_value = "file://temp"
+    )]
+    pub destination: String,
 }
 
 /// config schema
@@ -352,6 +361,9 @@ pub struct RelatedImage {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RelatedImageWrapper {
+    #[serde(rename = "name")]
+    pub name: String,
+
     #[serde(rename = "images")]
     pub images: Vec<RelatedImage>,
 
@@ -435,6 +447,16 @@ pub trait RegistryInterface {
 
     // used to interact with container registry (retrieve blobs)
     async fn get_blobs(
+        &self,
+        log: &Logging,
+        dir: String,
+        url: String,
+        token: String,
+        layers: Vec<FsLayer>,
+    ) -> String;
+
+    // used to interact with container registry (push blobs)
+    async fn push_blobs(
         &self,
         log: &Logging,
         dir: String,

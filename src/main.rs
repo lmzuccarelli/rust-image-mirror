@@ -2,7 +2,7 @@
 //use batch::copy::get_blobs;
 // use modules
 use clap::Parser;
-use operator::collector::mirror_to_disk;
+use operator::collector::*;
 use std::collections::HashSet;
 use std::path::Path;
 use tokio;
@@ -41,13 +41,18 @@ async fn main() {
 
     let log = &Logging { log_level: res };
 
+    if args.destination == "" {
+        log.error("destination is mandotory use docker:// or file:// prefix");
+        std::process::exit(exitcode::USAGE);
+    }
+
     log.info(&format!("rust-image-mirror {} ", cfg));
     let mut current_cache = HashSet::new();
 
     if args.diff_tar.unwrap() {
         if args.date.clone().unwrap().len() == 0 {
             current_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
-            log.mid(&format!("current cache {:#?} ", current_cache));
+            log.debug(&format!("current cache {:#?} ", current_cache));
         }
     }
 
@@ -59,48 +64,65 @@ async fn main() {
         isc_config.mirror.operators
     ));
 
-    // TODO: call release collector
+    // detect the mode
+    // this is mirrorToDisk
+    if args.destination.contains("file://") {
+        let reg_con = ImplRegistryInterface {};
 
-    let reg_con = ImplRegistryInterface {};
+        mirror_to_disk(
+            reg_con,
+            log,
+            String::from("./working-dir/"),
+            String::from(""),
+            isc_config.mirror.operators.unwrap(),
+        )
+        .await;
 
-    mirror_to_disk(
-        reg_con,
-        log,
-        String::from("./working-dir/"),
-        String::from(""),
-        isc_config.mirror.operators.unwrap(),
-    )
-    .await;
+        // TODO: call additionalImages collector
 
-    // TODO: call additionalImages collector
-
-    // if flag diff-tar is set create a diff tar.gz
-    if args.diff_tar.unwrap() {
-        let mut new_cache = HashSet::new();
-        log.trace(&format!("new cache {:#?}", new_cache));
-        if args.date.clone().unwrap().len() > 0 {
-            new_cache =
-                get_metadata_dirs_by_date(log, String::from("working-dir/"), args.date.unwrap());
-        } else {
-            new_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
-        }
-        let diff: Vec<_> = new_cache.difference(&current_cache).collect();
-        log.mid(&format!("difference {:#?}", diff));
-        if diff.len() > 0 {
-            log.info("creating mirror_diff.tar.gz");
-            let res = create_diff_tar(
-                log,
-                String::from("mirror-diff.tar.gz"),
-                String::from("working-dir/blobs-store"),
-                diff,
-                config,
-            );
-            match res {
-                Ok(_) => log.info("mirror-diff.tar.gz successfully created"),
-                Err(err) => log.error(&format!("errror creating diff tar {:#?}", err)),
+        // if flag diff-tar is set create a diff tar.gz
+        if args.diff_tar.unwrap() {
+            let mut new_cache = HashSet::new();
+            log.trace(&format!("new cache {:#?}", new_cache));
+            if args.date.clone().unwrap().len() > 0 {
+                new_cache = get_metadata_dirs_by_date(
+                    log,
+                    String::from("working-dir/"),
+                    args.date.unwrap(),
+                );
+            } else {
+                new_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
             }
-        } else {
-            log.info("no difference found mirror_diff.tar.gz not created");
+            let diff: Vec<_> = new_cache.difference(&current_cache).collect();
+            log.mid(&format!("difference {:#?}", diff));
+            if diff.len() > 0 {
+                log.info("creating mirror_diff.tar.gz");
+                let res = create_diff_tar(
+                    log,
+                    String::from("mirror-diff.tar.gz"),
+                    String::from("working-dir/blobs-store"),
+                    diff,
+                    config,
+                );
+                match res {
+                    Ok(_) => log.info("mirror-diff.tar.gz successfully created"),
+                    Err(err) => log.error(&format!("errror creating diff tar {:#?}", err)),
+                }
+            } else {
+                log.info("no difference found mirror_diff.tar.gz not created");
+            }
         }
+    } else {
+        // this is diskToMirror
+        let reg_con = ImplRegistryInterface {};
+
+        disk_to_mirror(
+            reg_con,
+            log,
+            String::from("./working-dir/"),
+            String::from(""),
+            isc_config.mirror.operators.unwrap(),
+        )
+        .await;
     }
 }
