@@ -21,6 +21,9 @@ pub struct ManifestList {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Manifest {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: i64,
+
     #[serde(rename = "digest")]
     pub digest: Option<String>,
 
@@ -34,7 +37,7 @@ pub struct Manifest {
     pub size: Option<i64>,
 
     #[serde(rename = "config")]
-    pub config: Option<ManifestConfig>,
+    pub config: Option<Layer>,
 
     #[serde(rename = "layers")]
     pub layers: Option<Vec<Layer>>,
@@ -91,6 +94,19 @@ pub struct FsLayer {
     pub blob_sum: String,
     pub original_ref: Option<String>,
     pub result: Option<String>,
+}
+
+// used to add path and arch (platform) info for mirroring
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MirrorManifest {
+    pub registry: String,
+    pub namespace: String,
+    pub name: String,
+    pub version: String,
+    pub component: String,
+    pub channel: String,
+    pub sub_component: String,
+    pub manifest_file: String,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -425,13 +441,21 @@ pub struct Bundle {
 }
 
 // ImageReference
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageReference {
     pub registry: String,
     pub namespace: String,
     pub name: String,
     pub version: String,
     pub packages: Vec<Package>,
+}
+
+// DestinationRegistry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DestinationRegistry {
+    pub protocol: String,
+    pub registry: String,
+    pub name: String,
 }
 
 pub struct ImplRegistryInterface {}
@@ -456,12 +480,12 @@ pub trait RegistryInterface {
     ) -> String;
 
     // used to interact with container registry (push blobs)
-    async fn push_blobs(
+    async fn push_image(
         &self,
         log: &Logging,
-        dir: String,
+        sub_component: String,
         url: String,
         token: String,
-        layers: Vec<FsLayer>,
+        manifest: Manifest,
     ) -> String;
 }

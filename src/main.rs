@@ -66,9 +66,9 @@ async fn main() {
 
     // detect the mode
     // this is mirrorToDisk
-    if args.destination.contains("file://") {
-        let reg_con = ImplRegistryInterface {};
+    let reg_con = ImplRegistryInterface {};
 
+    if args.destination.contains("file://") {
         mirror_to_disk(
             reg_con,
             log,
@@ -114,12 +114,11 @@ async fn main() {
         }
     } else {
         // this is diskToMirror
-        let reg_con = ImplRegistryInterface {};
-
         disk_to_mirror(
             reg_con,
             log,
             String::from("./working-dir/"),
+            args.destination,
             String::from(""),
             isc_config.mirror.operators.unwrap(),
         )

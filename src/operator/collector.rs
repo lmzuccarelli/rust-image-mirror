@@ -203,92 +203,106 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
 }
 
 pub async fn disk_to_mirror<T: RegistryInterface>(
-    _reg_con: T,
+    reg_con: T,
     log: &Logging,
     dir: String,
-    _token_url: String,
+    destination_url: String,
+    _token: String,
     operators: Vec<Operator>,
 ) -> String {
     // read isc catalogs, packages
     // read all manifests and blobs from disk
     // build the list
     // call push_blobs
+    let mut mirror_manifests = vec![];
     log.info("operator collector mode: diskToMirror");
     for op in operators.iter() {
         log.info(&format!("catalog {:#?} ", &op.catalog));
         for pkg in op.packages.clone().unwrap().iter() {
             log.info(&format!("packages {:#?} ", pkg));
-            let ir = get_registry_detials(&op.catalog);
+            let ir = get_registry_details(&op.catalog);
             // iterate through each directory in
             // does it match with the pkg name
             // if yes then lets see if channels are set
-
             // with this info we can open the manifest to get all layers
             let manifest_dir =
                 get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &pkg.name);
-            log.trace(&format!("manifest top level dir {:#?}", manifest_dir));
             if pkg.channels.is_some() {
                 for channel in pkg.channels.clone().unwrap().iter() {
-                    log.info(&format!("channel {:#?}", channel));
-                    // read all manifests in sub directories for this operator and channel
-                    let _mfsts =
-                        get_all_manifests(log, manifest_dir.to_string() + "/" + &channel.name);
+                    log.debug(&format!(
+                        "adding manifest {:#?}",
+                        manifest_dir.clone() + &"/" + &channel.name
+                    ));
+                    let check_dir = manifest_dir.clone() + &"/" + &channel.name;
+                    let am = get_all_assosciated_manifests(log, check_dir.clone());
+                    mirror_manifests.insert(0, am.clone());
                 }
             } else {
-                log.info("no channel");
+                // this means we take all channels listed
+                log.info("no channel/s set");
+                let paths = fs::read_dir(&manifest_dir).unwrap();
+                for path in paths {
+                    let entry = path.unwrap();
+                    let file = entry.path();
+                    // we have the channel
+                    if file.is_dir() {
+                        log.debug(&format!("adding manifest {:#?}", &file));
+                        let hld = file.clone().into_os_string().into_string().unwrap();
+                        let am = get_all_assosciated_manifests(log, hld);
+                        mirror_manifests.insert(0, am.clone());
+                    }
+                }
             }
+        }
+    }
+    // we now have all the relevant manifests
+    log.debug(&format!(
+        "list all relevant manifests {:#?}",
+        mirror_manifests
+    ));
+
+    // using map and collect are not async
+    for mm in mirror_manifests.iter() {
+        for x in mm.iter() {
+            // we can infer some info from the manifest
+            let binding = x.to_string();
+            let rd = get_registry_details_from_manifest(binding.clone());
+            log.trace(&format!("metadata for manifest {:#?}", rd));
+            let manifest = get_manifest(binding);
+            let _res = reg_con
+                .push_image(
+                    log,
+                    rd.sub_component,
+                    destination_url.clone(),
+                    String::from(""),
+                    manifest.clone(),
+                )
+                .await;
         }
     }
     String::from("ok")
 }
 
-fn get_all_manifests(log: &Logging, dir: String) -> String {
-    let paths = fs::read_dir(&dir);
-    // for both release & operator image indexes
-    // we know the layer we are looking for is only 1 level
-    // down from the parent
-    match paths {
-        Ok(res_paths) => {
-            for path in res_paths {
-                let entry = path.expect("could not resolve path entry");
-                let file = entry.path();
-                // go down one more level
-                // TODO: if there are more lower levels ?
-                let sub_paths = fs::read_dir(file).unwrap();
-                for sub_path in sub_paths {
-                    // TODO:
-                    // consider replacing this with walkdir
-                    let sub_entry = sub_path.expect("could not resolve sub path entry");
-                    let sub_name = sub_entry.path();
-                    let str_dir = sub_name.into_os_string().into_string().unwrap();
-                    log.trace(&format!("sub dir (operator manifests) {}", str_dir));
-                    for file in WalkDir::new(&str_dir)
-                        .into_iter()
-                        .filter_map(|file| file.ok())
-                    {
-                        // read and parse the manifest
-                        if file.metadata().unwrap().is_file()
-                            & file.path().display().to_string().contains("amd64")
-                        {
-                            let data = fs::read_to_string(file.path().display().to_string())
-                                .expect("should read various arch manifest files");
-                            let op_manifest = parse_json_manifest_operator(data);
-                            log.info(&format!(
-                                "manifest for {:#?} {:#?}",
-                                file.path().display().to_string(),
-                                op_manifest
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        Err(error) => {
-            let msg = format!("{} ", error);
-            log.warn(&msg);
+fn get_manifest(dir: String) -> Manifest {
+    let data = fs::read_to_string(&dir).expect("should read various arch manifest files");
+    let manifest = parse_json_manifest_operator(data).unwrap();
+    manifest
+}
+
+fn get_all_assosciated_manifests(log: &Logging, dir: String) -> Vec<String> {
+    let mut vec_manifests: Vec<String> = vec![];
+    let result = WalkDir::new(&dir);
+    for file in result.into_iter().filter_map(|file| file.ok()) {
+        if file.metadata().unwrap().is_file() & !file.path().display().to_string().contains("list")
+        {
+            log.debug(&format!(
+                "assosciated manifest found {:#?}",
+                file.path().display().to_string()
+            ));
+            vec_manifests.insert(0, file.path().display().to_string());
         }
     }
-    "ok".to_string()
+    vec_manifests
 }
 
 fn get_related_images_from_catalog(
@@ -404,7 +418,7 @@ fn get_operator_manifest_json_dir(
     file
 }
 
-fn get_registry_detials(reg: &str) -> ImageReference {
+fn get_registry_details(reg: &str) -> ImageReference {
     let mut ver = reg.split(":");
     let mut hld = ver.nth(0).unwrap().split("/");
     let pkg = Package {
@@ -423,6 +437,22 @@ fn get_registry_detials(reg: &str) -> ImageReference {
         packages: vec_pkg,
     };
     ir
+}
+
+fn get_registry_details_from_manifest(name: String) -> MirrorManifest {
+    let res = name.split("/");
+    let collection = res.clone().collect::<Vec<&str>>();
+    let mm = MirrorManifest {
+        registry: collection[1].to_string(),
+        namespace: collection[2].to_string(),
+        name: String::from(""),
+        version: collection[3].to_string(),
+        component: collection[5].to_string(),
+        channel: collection[6].to_string(),
+        sub_component: collection[7].to_string() + &"/" + collection[8],
+        manifest_file: collection[9].to_string(),
+    };
+    mm
 }
 
 #[cfg(test)]
