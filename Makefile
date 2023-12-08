@@ -4,9 +4,14 @@ all: clean test build
 
 LEVEL ?= "info"
 TEST ?= ""
+DIFF ?= false
+DOCKER_DESTINATION ?= "docker://127.0.0.1:5000/test"
 
 build: 
 	cargo build
+
+build-release:
+	cargo build --release
 
 test: clean
 	CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='cargo-test-%p-%m.profraw' cargo test  -- --nocapture
@@ -19,10 +24,10 @@ cover:
 	cp target/coverage/html/html/badges/flat.svg assets/
 
 run-d2m:
-	cargo run -- --config imagesetconfig.yaml --diff-tar true  --loglevel $(LEVEL) --destination docker://
+	cargo run -- --config imagesetconfig.yaml --diff-tar $(DIFF)  --loglevel $(LEVEL) --destination $(DOCKER_DESTINATION)
 
 run-m2d:
-	cargo run -- --config imagesetconfig.yaml --diff-tar true  --loglevel $(LEVEL) --destination file://
+	cargo run -- --config imagesetconfig.yaml --diff-tar $(DIFF)  --loglevel $(LEVEL) --destination file://
 
 clean:
 	rm -rf cargo-test*
