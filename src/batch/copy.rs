@@ -121,7 +121,7 @@ impl RegistryInterface for ImplRegistryInterface {
         fetches.await;
         String::from("ok")
     }
-    // push each blob referred to by the vector in parallel
+    // push each image (blobs and manifest) referred to by the Manifest
     async fn push_image(
         &self,
         log: &Logging,
@@ -192,10 +192,11 @@ impl RegistryInterface for ImplRegistryInterface {
 
 // Refer to https://distribution.github.io/distribution/spec/api/
 // for the full flow on image (container) push
+//
 // 1. First step is to post a blob
 //    POST /v2/<name>/blobs/uploads/
-//    If the POST request is successful, a 202 Accepted response will be returned with Location and
-//    UUID
+//    If the POST request is successful, a 202 Accepted response will be returned
+//    with Location and UUID
 // 2. Check if the blob exists
 //    HEAD /v2/<name>/blobs/<digest>
 //    If the layer with the digest specified in digest is available, a 200 OK response will be received,
@@ -203,7 +204,7 @@ impl RegistryInterface for ImplRegistryInterface {
 // 3. If it does not exist do a put
 //    PUT /v2/<name>/blobs/uploads/<uuid>?digest=<digest>
 //    continue for each blob in the specifid container
-// 4. Upload the manifest
+// 4. Finally upload the manifest
 //    PUT /v2/<name>/manifests/<reference>
 pub async fn process_blob(
     log: &Logging,
@@ -515,7 +516,7 @@ mod tests {
             namespace: String::from("test"),
             name: String::from("some-operator"),
             version: String::from("v1.0.0"),
-            packages: pkgs,
+            packages: Some(pkgs),
         };
         let res = get_blobs_url(ir);
         assert_eq!(

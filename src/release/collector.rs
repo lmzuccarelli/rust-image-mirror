@@ -9,204 +9,197 @@ use std::fs;
 use walkdir::WalkDir;
 
 // collect all operator images
-pub async fn operator_mirror_to_disk<T: RegistryInterface>(
+pub async fn release_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
     token_url: String,
-    operators: Vec<Operator>,
+    release: String,
 ) {
-    log.info("operator collector mode: mirrorToDisk");
+    log.info("release collector mode: mirrorToDisk");
 
     // parse the config - iterate through each catalog
-    let img_ref = parse_image_index(log, operators);
+    let img_ref = parse_release_image_index(log, release);
     log.debug(&format!("Image refs {:#?}", img_ref));
 
-    for ir in img_ref {
-        let manifest_json = get_manifest_json_file(
-            // ./working-dir
-            dir.clone(),
-            ir.name.clone(),
-            ir.version.clone(),
-        );
-        log.trace(&format!("manifest json file {}", manifest_json));
-        let token = get_token(log, ir.registry.clone(), token_url.clone()).await;
-        // use token to get manifest
-        let manifest_url = get_image_manifest_url(ir.clone());
-        let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.clone())
-            .await
-            .unwrap();
+    let manifest_json = get_manifest_json_file(
+        // ./working-dir
+        dir.clone(),
+        img_ref.name.clone(),
+        img_ref.version.clone(),
+    );
+    log.trace(&format!("manifest json file {}", manifest_json));
+    let token = get_token(log, img_ref.registry.clone(), token_url.clone()).await;
+    // use token to get manifest
+    let manifest_url = get_image_manifest_url(img_ref.clone());
+    let manifest = reg_con
+        .get_manifest(manifest_url.clone(), token.clone())
+        .await
+        .unwrap();
 
-        // create the full path
-        // TODO:
-        let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
-        log.info(&format!("manifest directory {}", manifest_dir));
-        fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
-        fs::write(manifest_json, manifest.clone())
-            .expect("unable to write (index) manifest.json file");
-        let res = parse_json_manifest(manifest).unwrap();
-        let blobs_url = get_blobs_url(ir.clone());
-        // use a concurrent process to get related blobs
-        let sub_dir = dir.clone() + "/blobs-store/";
-        reg_con
-            .get_blobs(
-                log,
-                sub_dir.clone(),
-                blobs_url,
-                token.clone(),
-                res.fs_layers.clone(),
-            )
-            .await;
-        log.info("completed image index download");
-
-        let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
-        // create the cache directory
-        fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
-        untar_layers(
+    /*
+    // create the full path
+    // TODO:
+    let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
+    log.info(&format!("manifest directory {}", manifest_dir));
+    fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
+    fs::write(manifest_json, manifest.clone()).expect("unable to write (index) manifest.json file");
+    let res = parse_json_manifest(manifest).unwrap();
+    let blobs_url = get_blobs_url(ir.clone());
+    // use a concurrent process to get related blobs
+    let sub_dir = dir.clone() + "/blobs-store/";
+    reg_con
+        .get_blobs(
             log,
             sub_dir.clone(),
-            working_dir_cache.clone(),
-            res.fs_layers,
+            blobs_url,
+            token.clone(),
+            res.fs_layers.clone(),
         )
         .await;
-        log.hi("completed untar of layers");
+    log.info("completed image index download");
 
-        // find the directory 'configs'
-        // TODO if new blobs are downloaded the config dir could be in another blob
-        let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
-        log.mid(&format!(
-            "full path for directory 'configs' {} ",
-            &config_dir
-        ));
+    let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
+    // create the cache directory
+    fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
+    untar_layers(
+        log,
+        sub_dir.clone(),
+        working_dir_cache.clone(),
+        res.fs_layers,
+    )
+    .await;
+    log.hi("completed untar of layers");
 
-        let wrappers = get_related_images_from_catalog(
-            log,
-            config_dir,
-            ir.packages.clone().expect("should have packages"),
-        );
-        log.debug(&format!("images from catalog for {:#?}", ir.packages));
+    // find the directory 'configs'
+    // TODO if new blobs are downloaded the config dir could be in another blob
+    let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
+    log.mid(&format!(
+        "full path for directory 'configs' {} ",
+        &config_dir
+    ));
 
-        // iterate through all the related images
-        for wrapper in wrappers.iter() {
-            for imgs in wrapper.images.iter() {
-                // first check if the manifest exists
-                let op_name = get_operator_name(
-                    wrapper.name.clone(),
-                    imgs.image.clone(),
-                    wrapper.channel.clone(),
-                );
-                log.debug(&format!("operator name {:#?}", op_name));
-                let op_dir =
-                    get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &op_name);
-                fs::create_dir_all(op_dir.clone()).expect("should create full operator path");
-                log.debug(&format!("operator manifest path {:#?}", op_dir));
-                //let file = op_dir.clone() + "/manifest.json";
-                //if !Path::new(&file).exists() {
-                let manifest_url = get_manifest_url(imgs.image.clone());
-                log.trace(&format!("manifest url {:#?}", manifest_url));
-                // use the RegistryInterface to make the call
-                let manifest = reg_con
-                    .get_manifest(manifest_url.clone(), token.clone())
-                    .await
-                    .unwrap();
-                log.trace(&format!("manifest contents {:#?}", manifest));
-                // check if the manifest is of type list
-                let manifest_list = parse_json_manifestlist(manifest.clone());
-                fs::create_dir_all(&op_dir).expect("unable to create operator manifest directory");
-                let mut fslayers = Vec::new();
-                if manifest_list.is_ok() {
-                    let ml = manifest_list.unwrap().clone();
-                    if ml.media_type == "application/vnd.docker.distribution.manifest.list.v2+json"
-                    {
-                        fs::write(op_dir.clone() + "/manifest-list.json", manifest.clone())
-                            .expect("unable to write file");
-                        // look for the digest
-                        // loop through each manifest
-                        for mf in ml.manifests.iter() {
-                            let sub_manifest_url = get_manifest_url_by_digest(
-                                imgs.image.clone(),
-                                mf.digest.clone().unwrap(),
-                            );
-                            log.trace(&format!("sub manifest url {:#?}", sub_manifest_url.clone()));
-                            // use the RegistryInterface to make the api call
-                            let local_manifest = reg_con
-                                .get_manifest(sub_manifest_url.clone(), token.clone())
-                                .await
-                                .unwrap();
+    let wrappers = get_related_images_from_catalog(log, config_dir, ir.packages.clone());
+    log.debug(&format!("images from catalog for {:#?}", ir.packages));
 
-                            fs::write(
-                                op_dir.clone()
-                                    + "/manifest-"
-                                    + &mf.platform.clone().unwrap().architecture
-                                    + ".json",
-                                local_manifest.clone(),
-                            )
-                            .expect("unable to write file");
-                            log.trace(&format!(
-                                "local manifest (from sub manifest url) {:#?}",
-                                local_manifest.clone()
-                            ));
-                            // convert op_manifest.layer to FsLayer and add it to the collection
-                            let op_manifest =
-                                parse_json_manifest_operator(local_manifest.clone()).unwrap();
-                            for layer in op_manifest.layers.unwrap().iter() {
-                                let fslayer = FsLayer {
-                                    blob_sum: layer.digest.clone(),
-                                    original_ref: Some(imgs.image.clone()),
-                                    result: Some(String::from("")),
-                                };
-                                fslayers.insert(0, fslayer);
-                            }
-                            // add configs
-                            let cfg = FsLayer {
-                                blob_sum: op_manifest.config.unwrap().digest,
+    // iterate through all the related images
+    for wrapper in wrappers.iter() {
+        for imgs in wrapper.images.iter() {
+            // first check if the manifest exists
+            let op_name = get_operator_name(
+                wrapper.name.clone(),
+                imgs.image.clone(),
+                wrapper.channel.clone(),
+            );
+            log.debug(&format!("operator name {:#?}", op_name));
+            let op_dir =
+                get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &op_name);
+            fs::create_dir_all(op_dir.clone()).expect("should create full operator path");
+            log.debug(&format!("operator manifest path {:#?}", op_dir));
+            //let file = op_dir.clone() + "/manifest.json";
+            //if !Path::new(&file).exists() {
+            let manifest_url = get_manifest_url(imgs.image.clone());
+            log.trace(&format!("manifest url {:#?}", manifest_url));
+            // use the RegistryInterface to make the call
+            let manifest = reg_con
+                .get_manifest(manifest_url.clone(), token.clone())
+                .await
+                .unwrap();
+            log.trace(&format!("manifest contents {:#?}", manifest));
+            // check if the manifest is of type list
+            let manifest_list = parse_json_manifestlist(manifest.clone());
+            fs::create_dir_all(&op_dir).expect("unable to create operator manifest directory");
+            let mut fslayers = Vec::new();
+            if manifest_list.is_ok() {
+                let ml = manifest_list.unwrap().clone();
+                if ml.media_type == "application/vnd.docker.distribution.manifest.list.v2+json" {
+                    fs::write(op_dir.clone() + "/manifest-list.json", manifest.clone())
+                        .expect("unable to write file");
+                    // look for the digest
+                    // loop through each manifest
+                    for mf in ml.manifests.iter() {
+                        let sub_manifest_url = get_manifest_url_by_digest(
+                            imgs.image.clone(),
+                            mf.digest.clone().unwrap(),
+                        );
+                        log.trace(&format!("sub manifest url {:#?}", sub_manifest_url.clone()));
+                        // use the RegistryInterface to make the api call
+                        let local_manifest = reg_con
+                            .get_manifest(sub_manifest_url.clone(), token.clone())
+                            .await
+                            .unwrap();
+
+                        fs::write(
+                            op_dir.clone()
+                                + "/manifest-"
+                                + &mf.platform.clone().unwrap().architecture
+                                + ".json",
+                            local_manifest.clone(),
+                        )
+                        .expect("unable to write file");
+                        log.trace(&format!(
+                            "local manifest (from sub manifest url) {:#?}",
+                            local_manifest.clone()
+                        ));
+                        // convert op_manifest.layer to FsLayer and add it to the collection
+                        let op_manifest =
+                            parse_json_manifest_operator(local_manifest.clone()).unwrap();
+                        for layer in op_manifest.layers.unwrap().iter() {
+                            let fslayer = FsLayer {
+                                blob_sum: layer.digest.clone(),
                                 original_ref: Some(imgs.image.clone()),
                                 result: Some(String::from("")),
                             };
-                            fslayers.insert(0, cfg);
+                            fslayers.insert(0, fslayer);
                         }
-                    }
-                } else {
-                    fs::write(op_dir.clone() + "/manifest.json", manifest.clone())
-                        .expect("unable to write file");
-                    // now download each related images blobs
-                    log.debug(&format!("manifest dir {:#?}", op_dir));
-                    let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
-                    log.trace(&format!("op_manifest {:#?}", op_manifest));
-                    // convert op_manifest.layer to FsLayer
-                    for layer in op_manifest.layers.unwrap().iter() {
-                        let fslayer = FsLayer {
-                            blob_sum: layer.digest.clone(),
+                        // add configs
+                        let cfg = FsLayer {
+                            blob_sum: op_manifest.config.unwrap().digest,
                             original_ref: Some(imgs.image.clone()),
                             result: Some(String::from("")),
                         };
-                        fslayers.insert(0, fslayer);
+                        fslayers.insert(0, cfg);
                     }
-                    // add configs
-                    let cfg = FsLayer {
-                        blob_sum: op_manifest.config.unwrap().digest,
+                }
+            } else {
+                fs::write(op_dir.clone() + "/manifest.json", manifest.clone())
+                    .expect("unable to write file");
+                // now download each related images blobs
+                log.debug(&format!("manifest dir {:#?}", op_dir));
+                let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
+                log.trace(&format!("op_manifest {:#?}", op_manifest));
+                // convert op_manifest.layer to FsLayer
+                for layer in op_manifest.layers.unwrap().iter() {
+                    let fslayer = FsLayer {
+                        blob_sum: layer.digest.clone(),
                         original_ref: Some(imgs.image.clone()),
                         result: Some(String::from("")),
                     };
-                    fslayers.insert(0, cfg);
+                    fslayers.insert(0, fslayer);
                 }
-                let op_url = get_blobs_url_by_string(imgs.image.clone());
-                reg_con
-                    .get_blobs(
-                        log,
-                        sub_dir.clone(),
-                        op_url,
-                        token.clone(),
-                        fslayers.clone(),
-                    )
-                    .await;
+                // add configs
+                let cfg = FsLayer {
+                    blob_sum: op_manifest.config.unwrap().digest,
+                    original_ref: Some(imgs.image.clone()),
+                    result: Some(String::from("")),
+                };
+                fslayers.insert(0, cfg);
             }
+            let op_url = get_blobs_url_by_string(imgs.image.clone());
+            reg_con
+                .get_blobs(
+                    log,
+                    sub_dir.clone(),
+                    op_url,
+                    token.clone(),
+                    fslayers.clone(),
+                )
+                .await;
         }
-    }
+    }*/
 }
 
-pub async fn operator_disk_to_mirror<T: RegistryInterface>(
+pub async fn release_disk_to_mirror<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
@@ -219,7 +212,7 @@ pub async fn operator_disk_to_mirror<T: RegistryInterface>(
     // build the list
     // call push_blobs
     let mut mirror_manifests = vec![];
-    log.info("operator collector mode: diskToMirror");
+    log.info("release collector mode: diskToMirror");
     for op in operators.iter() {
         log.info(&format!("catalog {:#?} ", &op.catalog));
         for pkg in op.packages.clone().unwrap().iter() {

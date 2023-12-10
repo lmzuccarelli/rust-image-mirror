@@ -223,6 +223,9 @@ pub struct Mirror {
     #[serde(rename = "platform")]
     pub platform: Option<Platform>,
 
+    #[serde(rename = "release")]
+    pub release: Option<String>,
+
     #[serde(rename = "operators")]
     pub operators: Option<Vec<Operator>>,
 
@@ -447,7 +450,7 @@ pub struct ImageReference {
     pub namespace: String,
     pub name: String,
     pub version: String,
-    pub packages: Vec<Package>,
+    pub packages: Option<Vec<Package>>,
 }
 
 // DestinationRegistry
@@ -458,6 +461,7 @@ pub struct DestinationRegistry {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct ImplRegistryInterface {}
 
 #[async_trait]

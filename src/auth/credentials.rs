@@ -68,6 +68,7 @@ pub async fn get_auth_json(
 pub async fn get_token(log: &Logging, name: String, url: String) -> String {
     let token_url = match name.as_str() {
         "registry.redhat.io" => "https://sso.redhat.com/auth/realms/rhcc/protocol/redhat-docker-v2/auth?service=docker-registry&client_id=curl&scope=repository:rhel:pull".to_string(),
+        "quay.io" => "https://quay.io/cnr/api/v1/users/login".to_string(),
         "test.registry.io" => url.clone(),
         &_ => "none".to_string(),
     };

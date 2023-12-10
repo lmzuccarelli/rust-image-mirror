@@ -228,7 +228,7 @@ mod tests {
             namespace: String::from("test"),
             name: String::from("some-operator"),
             version: String::from("v0.0.1"),
-            packages: vec_pkg,
+            packages: Some(vec_pkg),
         };
         let res = get_image_manifest_url(imageref);
         assert_eq!(

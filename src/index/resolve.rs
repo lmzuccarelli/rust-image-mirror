@@ -57,6 +57,23 @@ pub async fn untar_layers(
     }
 }
 
+// parse_release_image_index - best attempt to parse image index and return catalog reference
+pub fn parse_release_image_index(log: &Logging, release: String) -> ImageReference {
+    let i = &mut release.split(":");
+    let index = i.nth(0).unwrap();
+    let mut hld = index.split("/");
+    let ver = i.nth(0).unwrap();
+    let ir = ImageReference {
+        registry: hld.nth(0).unwrap().to_string(),
+        namespace: hld.nth(0).unwrap().to_string(),
+        name: hld.nth(0).unwrap().to_string(),
+        version: ver.to_string(),
+        packages: None,
+    };
+    log.debug(&format!("image reference {:#?}", ir));
+    ir
+}
+
 // parse_image_index - best attempt to parse image index and return catalog reference
 pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageReference> {
     let mut image_refs = vec![];
@@ -72,7 +89,7 @@ pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageRe
             namespace: hld.nth(0).unwrap().to_string(),
             name: hld.nth(0).unwrap().to_string(),
             version: ver.to_string(),
-            packages: ops.packages.clone().unwrap(),
+            packages: ops.packages.clone(),
         };
 
         log.debug(&format!("image reference {:#?}", img));
