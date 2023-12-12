@@ -731,13 +731,13 @@ mod tests {
                 String::from("test")
             }
 
-            async fn push_blobs(
+            async fn push_image(
                 &self,
                 log: &Logging,
                 _dir: String,
                 _url: String,
                 _token: String,
-                _layers: Vec<FsLayer>,
+                _manifest: Manifest,
             ) -> String {
                 log.info("testing logging in fake test");
                 String::from("test")
@@ -747,7 +747,7 @@ mod tests {
         let fake = Fake {};
 
         let ops = vec![op];
-        aw!(mirror_to_disk(
+        aw!(operator_mirror_to_disk(
             fake,
             log,
             String::from("test-artifacts/"),

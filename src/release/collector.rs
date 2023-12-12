@@ -29,15 +29,15 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         img_ref.version.clone(),
     );
     log.trace(&format!("manifest json file {}", manifest_json));
-    let token = get_token(log, img_ref.registry.clone(), token_url.clone()).await;
-    // use token to get manifest
+    let token = String::from("");
+    let _test_token = get_token(log, img_ref.clone().registry, String::from("")).await;
     let manifest_url = get_image_manifest_url(img_ref.clone());
+    log.trace(&format!("manifest url {}", manifest_url));
     let manifest = reg_con
         .get_manifest(manifest_url.clone(), token.clone())
         .await
         .unwrap();
 
-    /*
     // create the full path
     // TODO:
     let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
@@ -45,7 +45,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
     fs::write(manifest_json, manifest.clone()).expect("unable to write (index) manifest.json file");
     let res = parse_json_manifest(manifest).unwrap();
-    let blobs_url = get_blobs_url(ir.clone());
+    let blobs_url = get_blobs_url(img_ref.clone());
+
+    //log.info(&format!("res {:#?}", res));
+    //log.info(&format!("blobs_url  {:#?}", blobs_url));
+
     // use a concurrent process to get related blobs
     let sub_dir = dir.clone() + "/blobs-store/";
     reg_con
@@ -59,7 +63,8 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         .await;
     log.info("completed image index download");
 
-    let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
+    let working_dir_cache =
+        get_cache_dir(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
     // create the cache directory
     fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
     untar_layers(
@@ -71,6 +76,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     .await;
     log.hi("completed untar of layers");
 
+    /*
     // find the directory 'configs'
     // TODO if new blobs are downloaded the config dir could be in another blob
     let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
@@ -724,13 +730,13 @@ mod tests {
                 String::from("test")
             }
 
-            async fn push_blobs(
+            async fn push_image(
                 &self,
                 log: &Logging,
                 _dir: String,
                 _url: String,
                 _token: String,
-                _layers: Vec<FsLayer>,
+                _manifest: Manifest,
             ) -> String {
                 log.info("testing logging in fake test");
                 String::from("test")
@@ -739,13 +745,12 @@ mod tests {
 
         let fake = Fake {};
 
-        let ops = vec![op];
-        aw!(mirror_to_disk(
+        aw!(release_mirror_to_disk(
             fake,
             log,
             String::from("test-artifacts/"),
             String::from(url + "/auth"),
-            ops
+            String::from("test")
         ));
     }
 }

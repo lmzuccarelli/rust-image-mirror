@@ -152,8 +152,9 @@ mod tests {
         };
         let vec_op = vec![op];
         let res = parse_image_index(log, vec_op);
+        let pkgs = res[0].clone().packages;
         assert_eq!(res.len(), 1);
-        assert_eq!(res[0].packages.len(), 1);
+        assert_eq!(pkgs.unwrap().len(), 1);
         assert_eq!(res[0].registry, String::from("test.registry.io"));
     }
 

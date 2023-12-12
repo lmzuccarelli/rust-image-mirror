@@ -22,6 +22,19 @@ impl RegistryInterface for ImplRegistryInterface {
         token: String,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let client = Client::new();
+        if token.len() == 0 {
+            let body = client
+                .get(url)
+                .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+                .header("Content-Type", "application/json")
+                .send()
+                .await?
+                .text()
+                .await?;
+
+            return Ok(body);
+        }
+
         let mut header_bearer: String = "Bearer ".to_owned();
         header_bearer.push_str(&token);
         let body = client
@@ -33,6 +46,7 @@ impl RegistryInterface for ImplRegistryInterface {
             .await?
             .text()
             .await?;
+
         Ok(body)
     }
     // get each blob referred to by the vector in parallel
@@ -47,8 +61,6 @@ impl RegistryInterface for ImplRegistryInterface {
     ) -> String {
         const PARALLEL_REQUESTS: usize = 8;
         let client = Client::new();
-        let mut header_bearer: String = "Bearer ".to_owned();
-        header_bearer.push_str(&token);
 
         // remove all duplicates in FsLayer
         let mut images = Vec::new();
@@ -80,15 +92,19 @@ impl RegistryInterface for ImplRegistryInterface {
             }
         }
         log.trace(&format!("fslayers vector {:#?}", images));
+        let mut header_bearer: String = "Bearer ".to_owned();
+        header_bearer.push_str(&token);
+
         let fetches = stream::iter(images.into_iter().map(|blob| {
             let client = client.clone();
             let url = blob.original_ref.unwrap().clone();
             let header_bearer = header_bearer.clone();
             let wrk_dir = dir.clone();
+
             async move {
                 match client
                     .get(url.clone() + &blob.blob_sum)
-                    .header("Authorization", header_bearer)
+                    // .header("Authorization", header_bearer)
                     .send()
                     .await
                 {

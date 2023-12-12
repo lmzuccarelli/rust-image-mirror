@@ -6,6 +6,7 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::str;
+use urlencoding::encode;
 
 // read the credentials from set path (see podman credential reference)
 pub fn get_credentials() -> Result<String, Box<dyn std::error::Error>> {
@@ -32,18 +33,33 @@ pub fn get_credentials() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 // parse the json credentials to a struct
-pub fn parse_json_creds(log: &Logging, data: String) -> Result<String, Box<dyn std::error::Error>> {
+pub fn parse_json_creds(
+    log: &Logging,
+    data: String,
+    mode: String,
+) -> Result<String, Box<dyn std::error::Error>> {
     // Parse the string of data into serde_json::Root.
+    let mut result: String = String::from("");
     let creds: Root = serde_json::from_str(&data)?;
-    log.trace("using credentials for registry_redhat_io");
-    Ok(creds.auths.registry_redhat_io.unwrap().auth)
+    if mode == "quay.io" {
+        log.trace("using credentials for quay.io`");
+        result = creds.auths.quay_io.unwrap().auth;
+        return Ok(result);
+    }
+    log.trace("using credentials for registry.redhat.io");
+    result = creds.auths.registry_redhat_io.unwrap().auth;
+    Ok(result)
 }
 
 // parse the json from the api call
-pub fn parse_json_token(data: String) -> Result<String, Box<dyn std::error::Error>> {
+pub fn parse_json_token(data: String, mode: String) -> Result<String, Box<dyn std::error::Error>> {
     // Parse the string of data into serde_json::Token.
     let root: Token = serde_json::from_str(&data)?;
-    Ok(root.access_token)
+    if &mode == "quay.io" {
+        return Ok(root.token.unwrap());
+    } else {
+        return Ok(root.access_token.unwrap());
+    }
 }
 
 // async api call with basic auth
@@ -54,9 +70,15 @@ pub async fn get_auth_json(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let pwd: Option<String> = Some(password);
+    //let encoded = encode(&url.clone()).to_string();
+    //println!("url {:#?}", encoded.clone());
     let body = client
         .get(url)
         .basic_auth(user, pwd)
+        .header(
+            "User-Agent",
+            "containers/5.29.1-dev (github.com/containers/image)",
+        )
         .send()
         .await?
         .text()
@@ -68,14 +90,14 @@ pub async fn get_auth_json(
 pub async fn get_token(log: &Logging, name: String, url: String) -> String {
     let token_url = match name.as_str() {
         "registry.redhat.io" => "https://sso.redhat.com/auth/realms/rhcc/protocol/redhat-docker-v2/auth?service=docker-registry&client_id=curl&scope=repository:rhel:pull".to_string(),
-        "quay.io" => "https://quay.io/cnr/api/v1/users/login".to_string(),
+        "quay.io" => "https://quay.io/v2/auth?account=openshift-release-dev%2Bocm_access_a06b733fc7ca4c0d8b77ef238fd6a7dc&service=quay%2Eio&scope=repository%3Aopenshift-release-dev%2Focp-v4.0-art-dev%3Apull".to_string(),
         "test.registry.io" => url.clone(),
         &_ => "none".to_string(),
     };
     // get creds from $XDG_RUNTIME_DIR
     let creds = get_credentials().unwrap();
     // parse the json data
-    let rhauth = parse_json_creds(&log, creds).unwrap();
+    let rhauth = parse_json_creds(&log, creds, name.clone()).unwrap();
     // decode to base64
     let bytes = general_purpose::STANDARD.decode(rhauth).unwrap();
 
@@ -87,11 +109,10 @@ pub async fn get_token(log: &Logging, name: String, url: String) -> String {
     let user = s.split(":").nth(0).unwrap();
     let pwd = s.split(":").nth(1).unwrap();
     // call the realm url to get a token with the creds
-    let res = get_auth_json(token_url, user.to_string(), pwd.to_string())
-        .await
-        .unwrap();
+    let res = get_auth_json(token_url, user.to_string(), pwd.to_string()).await;
+    log.info(&format!("result {:#?}", res));
     // if all goes well we should have a valid token
-    let token = parse_json_token(res).unwrap();
+    let token = parse_json_token(res.unwrap(), name.clone()).unwrap();
     token
 }
 
@@ -130,7 +151,7 @@ mod tests {
             log_level: Level::DEBUG,
         };
         let data = get_credentials().unwrap();
-        let res = parse_json_creds(log, data);
+        let res = parse_json_creds(log, data, String::from(""));
         assert!(res.is_ok());
     }
 

@@ -83,14 +83,16 @@ async fn main() {
             .await;
         }
 
-        operator_mirror_to_disk(
-            reg_con.clone(),
-            log,
-            String::from("./working-dir/"),
-            String::from(""),
-            isc_config.mirror.operators.unwrap(),
-        )
-        .await;
+        if isc_config.mirror.operators.is_some() {
+            operator_mirror_to_disk(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                String::from(""),
+                isc_config.mirror.operators.unwrap(),
+            )
+            .await;
+        }
 
         // TODO: call additionalImages collector
 

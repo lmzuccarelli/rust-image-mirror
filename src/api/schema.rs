@@ -112,13 +112,13 @@ pub struct MirrorManifest {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Token {
-    pub token: String,
+    pub token: Option<String>,
     #[serde(rename = "access_token")]
-    pub access_token: String,
+    pub access_token: Option<String>,
     #[serde(rename = "expires_in")]
-    pub expires_in: i64,
+    pub expires_in: Option<i64>,
     #[serde(rename = "issued_at")]
-    pub issued_at: String,
+    pub issued_at: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
