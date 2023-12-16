@@ -1,8 +1,9 @@
-//use auth::credentials::get_token;
-//use batch::copy::get_blobs;
+// use auth::credentials::get_token;
+// use batch::copy::get_blobs;
 // use modules
 use clap::Parser;
 use operator::collector::*;
+use release::collector::*;
 use std::collections::HashSet;
 use std::path::Path;
 use tokio;
@@ -17,6 +18,7 @@ mod index;
 mod log;
 mod manifests;
 mod operator;
+mod release;
 
 // use local modules
 use api::schema::*;
@@ -65,18 +67,30 @@ async fn main() {
     ));
 
     // detect the mode
-    // this is mirrorToDisk
     let reg_con = ImplRegistryInterface {};
 
+    // this is mirrorToDisk
     if args.destination.contains("file://") {
-        mirror_to_disk(
-            reg_con,
-            log,
-            String::from("./working-dir/"),
-            String::from(""),
-            isc_config.mirror.operators.unwrap(),
-        )
-        .await;
+        // check for release image
+        if isc_config.mirror.release.is_some() {
+            release_mirror_to_disk(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                isc_config.mirror.release.unwrap(),
+            )
+            .await;
+        }
+
+        if isc_config.mirror.operators.is_some() {
+            operator_mirror_to_disk(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                isc_config.mirror.operators.unwrap(),
+            )
+            .await;
+        }
 
         // TODO: call additionalImages collector
 
@@ -114,12 +128,21 @@ async fn main() {
         }
     } else {
         // this is diskToMirror
-        disk_to_mirror(
-            reg_con,
+        let destination = args.destination;
+        release_disk_to_mirror(
+            reg_con.clone(),
             log,
             String::from("./working-dir/"),
-            args.destination,
-            String::from(""),
+            destination.clone(),
+            isc_config.mirror.release.unwrap(),
+        )
+        .await;
+
+        operator_disk_to_mirror(
+            reg_con.clone(),
+            log,
+            String::from("./working-dir/"),
+            destination.clone(),
             isc_config.mirror.operators.unwrap(),
         )
         .await;

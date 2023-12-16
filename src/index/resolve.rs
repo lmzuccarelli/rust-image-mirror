@@ -57,6 +57,23 @@ pub async fn untar_layers(
     }
 }
 
+// parse_release_image_index - best attempt to parse image index and return catalog reference
+pub fn parse_release_image_index(log: &Logging, release: String) -> ImageReference {
+    let i = &mut release.split(":");
+    let index = i.nth(0).unwrap();
+    let mut hld = index.split("/");
+    let ver = i.nth(0).unwrap();
+    let ir = ImageReference {
+        registry: hld.nth(0).unwrap().to_string(),
+        namespace: hld.nth(0).unwrap().to_string(),
+        name: hld.nth(0).unwrap().to_string(),
+        version: ver.to_string(),
+        packages: None,
+    };
+    log.debug(&format!("image reference {:#?}", ir));
+    ir
+}
+
 // parse_image_index - best attempt to parse image index and return catalog reference
 pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageReference> {
     let mut image_refs = vec![];
@@ -72,7 +89,7 @@ pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageRe
             namespace: hld.nth(0).unwrap().to_string(),
             name: hld.nth(0).unwrap().to_string(),
             version: ver.to_string(),
-            packages: ops.packages.clone().unwrap(),
+            packages: ops.packages.clone(),
         };
 
         log.debug(&format!("image reference {:#?}", img));
@@ -135,8 +152,9 @@ mod tests {
         };
         let vec_op = vec![op];
         let res = parse_image_index(log, vec_op);
+        let pkgs = res[0].clone().packages;
         assert_eq!(res.len(), 1);
-        assert_eq!(res[0].packages.len(), 1);
+        assert_eq!(pkgs.unwrap().len(), 1);
         assert_eq!(res[0].registry, String::from("test.registry.io"));
     }
 
@@ -149,13 +167,13 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:a48865"),
             original_ref: Some(String::from("test-a4")),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:b4385e"),
             original_ref: Some(String::from("test-b4")),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
         aw!(untar_layers(

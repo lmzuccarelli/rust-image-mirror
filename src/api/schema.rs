@@ -7,6 +7,56 @@ use serde_derive::Serialize;
 
 use crate::log::logging::*;
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReleaseSchema {
+    #[serde(rename = "spec")]
+    pub spec: Spec,
+    #[serde(rename = "kind")]
+    pub kind: String,
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    #[serde(rename = "metadata")]
+    pub metadata: MetaData,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Spec {
+    #[serde(rename = "lookupPolicy")]
+    pub lookup: LookupPolicy,
+    #[serde(rename = "tags")]
+    pub tags: Vec<Tags>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LookupPolicy {
+    #[serde(rename = "local")]
+    pub local: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Tags {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "from")]
+    pub from: From,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct From {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "kind")]
+    pub kind: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MetaData {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "creationTimestamp")]
+    pub creation: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ManifestList {
     #[serde(rename = "manifests")]
@@ -93,7 +143,7 @@ pub struct History {
 pub struct FsLayer {
     pub blob_sum: String,
     pub original_ref: Option<String>,
-    pub result: Option<String>,
+    //pub result: Option<String>,
 }
 
 // used to add path and arch (platform) info for mirroring
@@ -112,13 +162,13 @@ pub struct MirrorManifest {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Token {
-    pub token: String,
+    pub token: Option<String>,
     #[serde(rename = "access_token")]
-    pub access_token: String,
+    pub access_token: Option<String>,
     #[serde(rename = "expires_in")]
-    pub expires_in: i64,
+    pub expires_in: Option<i64>,
     #[serde(rename = "issued_at")]
-    pub issued_at: String,
+    pub issued_at: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +272,9 @@ pub struct ImageSetConfig {
 pub struct Mirror {
     #[serde(rename = "platform")]
     pub platform: Option<Platform>,
+
+    #[serde(rename = "release")]
+    pub release: Option<String>,
 
     #[serde(rename = "operators")]
     pub operators: Option<Vec<Operator>>,
@@ -447,7 +500,7 @@ pub struct ImageReference {
     pub namespace: String,
     pub name: String,
     pub version: String,
-    pub packages: Vec<Package>,
+    pub packages: Option<Vec<Package>>,
 }
 
 // DestinationRegistry
@@ -458,6 +511,7 @@ pub struct DestinationRegistry {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct ImplRegistryInterface {}
 
 #[async_trait]

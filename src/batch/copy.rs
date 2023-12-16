@@ -22,6 +22,19 @@ impl RegistryInterface for ImplRegistryInterface {
         token: String,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let client = Client::new();
+        if token.len() == 0 {
+            let body = client
+                .get(url)
+                .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+                .header("Content-Type", "application/json")
+                .send()
+                .await?
+                .text()
+                .await?;
+
+            return Ok(body);
+        }
+
         let mut header_bearer: String = "Bearer ".to_owned();
         header_bearer.push_str(&token);
         let body = client
@@ -33,6 +46,7 @@ impl RegistryInterface for ImplRegistryInterface {
             .await?
             .text()
             .await?;
+
         Ok(body)
     }
     // get each blob referred to by the vector in parallel
@@ -45,10 +59,8 @@ impl RegistryInterface for ImplRegistryInterface {
         token: String,
         layers: Vec<FsLayer>,
     ) -> String {
-        const PARALLEL_REQUESTS: usize = 8;
+        const PARALLEL_REQUESTS: usize = 16;
         let client = Client::new();
-        let mut header_bearer: String = "Bearer ".to_owned();
-        header_bearer.push_str(&token);
 
         // remove all duplicates in FsLayer
         let mut images = Vec::new();
@@ -58,6 +70,7 @@ impl RegistryInterface for ImplRegistryInterface {
             let truncated_image = img.blob_sum.split(":").nth(1).unwrap();
             let inner_blobs_file = get_blobs_file(dir.clone(), &truncated_image);
             let exist = Path::new(&inner_blobs_file).exists();
+            // filter out duplicates
             if !seen.contains(&truncated_image) && !exist {
                 seen.insert(truncated_image);
                 if url == "" {
@@ -66,25 +79,34 @@ impl RegistryInterface for ImplRegistryInterface {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(img_ref),
-                        result: Some(String::from("")),
+                        //result: Some(String::from("")),
                     };
                     images.push(layer);
                 } else {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(url.clone()),
-                        result: Some(String::from("")),
+                        //result: Some(String::from("")),
                     };
                     images.push(layer);
                 }
             }
         }
+        log.debug(&format!("blobs to download {}", images.len()));
         log.trace(&format!("fslayers vector {:#?}", images));
+        let mut header_bearer: String = "Bearer ".to_owned();
+        header_bearer.push_str(&token);
+
+        if images.len() > 0 {
+            log.debug("downloading blobs...");
+        }
+
         let fetches = stream::iter(images.into_iter().map(|blob| {
             let client = client.clone();
             let url = blob.original_ref.unwrap().clone();
             let header_bearer = header_bearer.clone();
             let wrk_dir = dir.clone();
+
             async move {
                 match client
                     .get(url.clone() + &blob.blob_sum)
@@ -104,7 +126,7 @@ impl RegistryInterface for ImplRegistryInterface {
                             log.info(&msg);
                         }
                         Err(_) => {
-                            let msg = format!("reading blob {}", url.clone());
+                            let msg = format!("writing blob {}", url.clone());
                             log.error(&msg);
                         }
                     },
@@ -117,11 +139,10 @@ impl RegistryInterface for ImplRegistryInterface {
         }))
         .buffer_unordered(PARALLEL_REQUESTS)
         .collect::<Vec<()>>();
-        log.debug("downloading blobs...");
         fetches.await;
         String::from("ok")
     }
-    // push each blob referred to by the vector in parallel
+    // push each image (blobs and manifest) referred to by the Manifest
     async fn push_image(
         &self,
         log: &Logging,
@@ -192,10 +213,11 @@ impl RegistryInterface for ImplRegistryInterface {
 
 // Refer to https://distribution.github.io/distribution/spec/api/
 // for the full flow on image (container) push
+//
 // 1. First step is to post a blob
 //    POST /v2/<name>/blobs/uploads/
-//    If the POST request is successful, a 202 Accepted response will be returned with Location and
-//    UUID
+//    If the POST request is successful, a 202 Accepted response will be returned
+//    with Location and UUID
 // 2. Check if the blob exists
 //    HEAD /v2/<name>/blobs/<digest>
 //    If the layer with the digest specified in digest is available, a 200 OK response will be received,
@@ -203,7 +225,7 @@ impl RegistryInterface for ImplRegistryInterface {
 // 3. If it does not exist do a put
 //    PUT /v2/<name>/blobs/uploads/<uuid>?digest=<digest>
 //    continue for each blob in the specifid container
-// 4. Upload the manifest
+// 4. Finally upload the manifest
 //    PUT /v2/<name>/manifests/<reference>
 pub async fn process_blob(
     log: &Logging,
@@ -441,7 +463,7 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:1234567890"),
             original_ref: Some(url.clone()),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         let fslayers = vec![fslayer];
         let log = &Logging {
@@ -515,7 +537,7 @@ mod tests {
             namespace: String::from("test"),
             name: String::from("some-operator"),
             version: String::from("v1.0.0"),
-            packages: pkgs,
+            packages: Some(pkgs),
         };
         let res = get_blobs_url(ir);
         assert_eq!(

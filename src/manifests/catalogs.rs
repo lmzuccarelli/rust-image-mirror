@@ -83,6 +83,15 @@ pub fn parse_json_manifestlist(data: String) -> Result<ManifestList, Box<dyn std
     Ok(root)
 }
 
+// parse the release image-reference
+pub fn parse_json_release_imagereference(
+    data: String,
+) -> Result<ReleaseSchema, Box<dyn std::error::Error>> {
+    // Parse the string of data into serde_json::ManifestList.
+    let root: ReleaseSchema = serde_json::from_str(&data)?;
+    Ok(root)
+}
+
 // contruct the manifest url
 pub fn get_image_manifest_url(image_ref: ImageReference) -> String {
     // return a string in the form of (example below)
@@ -228,7 +237,7 @@ mod tests {
             namespace: String::from("test"),
             name: String::from("some-operator"),
             version: String::from("v0.0.1"),
-            packages: vec_pkg,
+            packages: Some(vec_pkg),
         };
         let res = get_image_manifest_url(imageref);
         assert_eq!(

@@ -1,11 +1,12 @@
 kind: ImageSetConfiguration
 apiVersion: alpha1
 mirror:
-  operators:
-  - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.13"
-    packages:
-    - name: aws-load-balancer-operator
-      channels: 
-      - name: stable-v1
-      - name: alpha
-    - name: node-observability-operator
+  release: "quay.io/openshift-release-dev/ocp-release:4.14.6-x86_64"
+    #operators:
+    #- catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.13"
+    #packages:
+    #- name: aws-load-balancer-operator
+    #  channels: 
+    #  - name: stable-v1
+    #  - name: alpha
+    #- name: node-observability-operator

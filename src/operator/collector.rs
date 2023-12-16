@@ -9,11 +9,10 @@ use std::fs;
 use walkdir::WalkDir;
 
 // collect all operator images
-pub async fn mirror_to_disk<T: RegistryInterface>(
+pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
-    token_url: String,
     operators: Vec<Operator>,
 ) {
     log.info("operator collector mode: mirrorToDisk");
@@ -30,7 +29,7 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
             ir.version.clone(),
         );
         log.trace(&format!("manifest json file {}", manifest_json));
-        let token = get_token(log, ir.registry.clone(), token_url.clone()).await;
+        let token = get_token(log, ir.registry.clone()).await;
         // use token to get manifest
         let manifest_url = get_image_manifest_url(ir.clone());
         let manifest = reg_con
@@ -80,7 +79,11 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
             &config_dir
         ));
 
-        let wrappers = get_related_images_from_catalog(log, config_dir, ir.packages.clone());
+        let wrappers = get_related_images_from_catalog(
+            log,
+            config_dir,
+            ir.packages.clone().expect("should have packages"),
+        );
         log.debug(&format!("images from catalog for {:#?}", ir.packages));
 
         // iterate through all the related images
@@ -150,7 +153,7 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
                                 let fslayer = FsLayer {
                                     blob_sum: layer.digest.clone(),
                                     original_ref: Some(imgs.image.clone()),
-                                    result: Some(String::from("")),
+                                    //result: Some(String::from("")),
                                 };
                                 fslayers.insert(0, fslayer);
                             }
@@ -158,7 +161,7 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
                             let cfg = FsLayer {
                                 blob_sum: op_manifest.config.unwrap().digest,
                                 original_ref: Some(imgs.image.clone()),
-                                result: Some(String::from("")),
+                                //result: Some(String::from("")),
                             };
                             fslayers.insert(0, cfg);
                         }
@@ -175,7 +178,7 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
                         let fslayer = FsLayer {
                             blob_sum: layer.digest.clone(),
                             original_ref: Some(imgs.image.clone()),
-                            result: Some(String::from("")),
+                            //result: Some(String::from("")),
                         };
                         fslayers.insert(0, fslayer);
                     }
@@ -183,7 +186,7 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
                     let cfg = FsLayer {
                         blob_sum: op_manifest.config.unwrap().digest,
                         original_ref: Some(imgs.image.clone()),
-                        result: Some(String::from("")),
+                        //result: Some(String::from("")),
                     };
                     fslayers.insert(0, cfg);
                 }
@@ -202,12 +205,11 @@ pub async fn mirror_to_disk<T: RegistryInterface>(
     }
 }
 
-pub async fn disk_to_mirror<T: RegistryInterface>(
+pub async fn operator_disk_to_mirror<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
     destination_url: String,
-    _token: String,
     operators: Vec<Operator>,
 ) -> String {
     // read isc catalogs, packages
@@ -434,7 +436,7 @@ fn get_registry_details(reg: &str) -> ImageReference {
         namespace: hld.nth(0).unwrap().to_string(),
         name: hld.nth(0).unwrap().to_string(),
         version: ver.nth(0).unwrap().to_string(),
-        packages: vec_pkg,
+        packages: Some(vec_pkg),
     };
     ir
 }
@@ -727,13 +729,13 @@ mod tests {
                 String::from("test")
             }
 
-            async fn push_blobs(
+            async fn push_image(
                 &self,
                 log: &Logging,
                 _dir: String,
                 _url: String,
                 _token: String,
-                _layers: Vec<FsLayer>,
+                _manifest: Manifest,
             ) -> String {
                 log.info("testing logging in fake test");
                 String::from("test")
@@ -743,11 +745,10 @@ mod tests {
         let fake = Fake {};
 
         let ops = vec![op];
-        aw!(mirror_to_disk(
+        aw!(operator_mirror_to_disk(
             fake,
             log,
             String::from("test-artifacts/"),
-            String::from(url + "/auth"),
             ops
         ));
     }
