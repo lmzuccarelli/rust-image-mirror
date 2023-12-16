@@ -7,6 +7,56 @@ use serde_derive::Serialize;
 
 use crate::log::logging::*;
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReleaseSchema {
+    #[serde(rename = "spec")]
+    pub spec: Spec,
+    #[serde(rename = "kind")]
+    pub kind: String,
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    #[serde(rename = "metadata")]
+    pub metadata: MetaData,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Spec {
+    #[serde(rename = "lookupPolicy")]
+    pub lookup: LookupPolicy,
+    #[serde(rename = "tags")]
+    pub tags: Vec<Tags>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LookupPolicy {
+    #[serde(rename = "local")]
+    pub local: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Tags {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "from")]
+    pub from: From,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct From {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "kind")]
+    pub kind: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MetaData {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "creationTimestamp")]
+    pub creation: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ManifestList {
     #[serde(rename = "manifests")]
@@ -93,7 +143,7 @@ pub struct History {
 pub struct FsLayer {
     pub blob_sum: String,
     pub original_ref: Option<String>,
-    pub result: Option<String>,
+    //pub result: Option<String>,
 }
 
 // used to add path and arch (platform) info for mirroring

@@ -77,7 +77,6 @@ async fn main() {
                 reg_con.clone(),
                 log,
                 String::from("./working-dir/"),
-                String::from(""),
                 isc_config.mirror.release.unwrap(),
             )
             .await;
@@ -88,7 +87,6 @@ async fn main() {
                 reg_con.clone(),
                 log,
                 String::from("./working-dir/"),
-                String::from(""),
                 isc_config.mirror.operators.unwrap(),
             )
             .await;
@@ -130,12 +128,21 @@ async fn main() {
         }
     } else {
         // this is diskToMirror
-        operator_disk_to_mirror(
-            reg_con,
+        let destination = args.destination;
+        release_disk_to_mirror(
+            reg_con.clone(),
             log,
             String::from("./working-dir/"),
-            args.destination,
-            String::from(""),
+            destination.clone(),
+            isc_config.mirror.release.unwrap(),
+        )
+        .await;
+
+        operator_disk_to_mirror(
+            reg_con.clone(),
+            log,
+            String::from("./working-dir/"),
+            destination.clone(),
             isc_config.mirror.operators.unwrap(),
         )
         .await;

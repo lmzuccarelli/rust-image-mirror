@@ -59,7 +59,7 @@ impl RegistryInterface for ImplRegistryInterface {
         token: String,
         layers: Vec<FsLayer>,
     ) -> String {
-        const PARALLEL_REQUESTS: usize = 8;
+        const PARALLEL_REQUESTS: usize = 16;
         let client = Client::new();
 
         // remove all duplicates in FsLayer
@@ -70,6 +70,7 @@ impl RegistryInterface for ImplRegistryInterface {
             let truncated_image = img.blob_sum.split(":").nth(1).unwrap();
             let inner_blobs_file = get_blobs_file(dir.clone(), &truncated_image);
             let exist = Path::new(&inner_blobs_file).exists();
+            // filter out duplicates
             if !seen.contains(&truncated_image) && !exist {
                 seen.insert(truncated_image);
                 if url == "" {
@@ -78,22 +79,27 @@ impl RegistryInterface for ImplRegistryInterface {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(img_ref),
-                        result: Some(String::from("")),
+                        //result: Some(String::from("")),
                     };
                     images.push(layer);
                 } else {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(url.clone()),
-                        result: Some(String::from("")),
+                        //result: Some(String::from("")),
                     };
                     images.push(layer);
                 }
             }
         }
+        log.debug(&format!("blobs to download {}", images.len()));
         log.trace(&format!("fslayers vector {:#?}", images));
         let mut header_bearer: String = "Bearer ".to_owned();
         header_bearer.push_str(&token);
+
+        if images.len() > 0 {
+            log.debug("downloading blobs...");
+        }
 
         let fetches = stream::iter(images.into_iter().map(|blob| {
             let client = client.clone();
@@ -104,7 +110,7 @@ impl RegistryInterface for ImplRegistryInterface {
             async move {
                 match client
                     .get(url.clone() + &blob.blob_sum)
-                    // .header("Authorization", header_bearer)
+                    .header("Authorization", header_bearer)
                     .send()
                     .await
                 {
@@ -120,7 +126,7 @@ impl RegistryInterface for ImplRegistryInterface {
                             log.info(&msg);
                         }
                         Err(_) => {
-                            let msg = format!("reading blob {}", url.clone());
+                            let msg = format!("writing blob {}", url.clone());
                             log.error(&msg);
                         }
                     },
@@ -133,7 +139,6 @@ impl RegistryInterface for ImplRegistryInterface {
         }))
         .buffer_unordered(PARALLEL_REQUESTS)
         .collect::<Vec<()>>();
-        log.debug("downloading blobs...");
         fetches.await;
         String::from("ok")
     }
@@ -458,7 +463,7 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:1234567890"),
             original_ref: Some(url.clone()),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         let fslayers = vec![fslayer];
         let log = &Logging {

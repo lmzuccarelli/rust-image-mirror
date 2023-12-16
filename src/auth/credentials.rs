@@ -39,16 +39,13 @@ pub fn parse_json_creds(
     mode: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Parse the string of data into serde_json::Root.
-    let mut result: String = String::from("");
     let creds: Root = serde_json::from_str(&data)?;
     if mode == "quay.io" {
         log.trace("using credentials for quay.io`");
-        result = creds.auths.quay_io.unwrap().auth;
-        return Ok(result);
+        return Ok(creds.auths.quay_io.unwrap().auth);
     }
     log.trace("using credentials for registry.redhat.io");
-    result = creds.auths.registry_redhat_io.unwrap().auth;
-    Ok(result)
+    Ok(creds.auths.registry_redhat_io.unwrap().auth)
 }
 
 // parse the json from the api call
@@ -62,6 +59,19 @@ pub fn parse_json_token(data: String, mode: String) -> Result<String, Box<dyn st
     }
 }
 
+// update quay.io account and urlencode
+fn update_url(mut url: String, account: String) -> String {
+    let mut result = String::from("https://");
+    let service = "quay%2Eio";
+    let scope = "repository%3Aopenshift-release-dev%2Focp-v4.0-art-dev%3Apull";
+    let account_encoded = encode(&account).to_string();
+    url.push_str(&("account=".to_owned() + &account_encoded));
+    url.push_str(&("&service=".to_owned() + &service));
+    url.push_str(&("&scope=".to_owned() + &scope));
+    result.push_str(&url);
+    result
+}
+
 // async api call with basic auth
 pub async fn get_auth_json(
     url: String,
@@ -70,10 +80,8 @@ pub async fn get_auth_json(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let pwd: Option<String> = Some(password);
-    //let encoded = encode(&url.clone()).to_string();
-    //println!("url {:#?}", encoded.clone());
     let body = client
-        .get(url)
+        .get(&url)
         .basic_auth(user, pwd)
         .header(
             "User-Agent",
@@ -87,13 +95,7 @@ pub async fn get_auth_json(
 }
 
 // process all relative functions in this module to actaully get the token
-pub async fn get_token(log: &Logging, name: String, url: String) -> String {
-    let token_url = match name.as_str() {
-        "registry.redhat.io" => "https://sso.redhat.com/auth/realms/rhcc/protocol/redhat-docker-v2/auth?service=docker-registry&client_id=curl&scope=repository:rhel:pull".to_string(),
-        "quay.io" => "https://quay.io/v2/auth?account=openshift-release-dev%2Bocm_access_a06b733fc7ca4c0d8b77ef238fd6a7dc&service=quay%2Eio&scope=repository%3Aopenshift-release-dev%2Focp-v4.0-art-dev%3Apull".to_string(),
-        "test.registry.io" => url.clone(),
-        &_ => "none".to_string(),
-    };
+pub async fn get_token(log: &Logging, name: String) -> String {
     // get creds from $XDG_RUNTIME_DIR
     let creds = get_credentials().unwrap();
     // parse the json data
@@ -108,11 +110,19 @@ pub async fn get_token(log: &Logging, name: String, url: String) -> String {
     // get user and password form json
     let user = s.split(":").nth(0).unwrap();
     let pwd = s.split(":").nth(1).unwrap();
+    let token_url = match name.as_str() {
+        "registry.redhat.io" => "https://sso.redhat.com/auth/realms/rhcc/protocol/redhat-docker-v2/auth?service=docker-registry&client_id=curl&scope=repository:rhel:pull".to_string(),
+        "quay.io" => {
+            update_url("quay.io/v2/auth?".to_string(),user.to_string())
+        },
+        &_ => "none".to_string(),
+    };
+    log.info(&format!("url (redacted) {}", token_url.clone()));
     // call the realm url to get a token with the creds
     let res = get_auth_json(token_url, user.to_string(), pwd.to_string()).await;
-    log.info(&format!("result {:#?}", res));
+    let result = res.unwrap();
     // if all goes well we should have a valid token
-    let token = parse_json_token(res.unwrap(), name.clone()).unwrap();
+    let token = parse_json_token(result, name.clone()).unwrap();
     token
 }
 
@@ -135,11 +145,7 @@ mod tests {
         let log = &Logging {
             log_level: Level::DEBUG,
         };
-        let res = aw!(get_token(
-            log,
-            String::from("registry.redhat.io"),
-            String::from("")
-        ));
+        let res = aw!(get_token(log, String::from("registry.redhat.io"),));
         assert!(res.to_string() != String::from(""));
     }
 

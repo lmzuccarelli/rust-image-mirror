@@ -167,13 +167,13 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:a48865"),
             original_ref: Some(String::from("test-a4")),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:b4385e"),
             original_ref: Some(String::from("test-b4")),
-            result: Some(String::from("")),
+            //result: Some(String::from("")),
         };
         vec_layers.insert(0, fslayer);
         aw!(untar_layers(

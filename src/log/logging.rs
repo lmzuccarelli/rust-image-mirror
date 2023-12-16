@@ -35,8 +35,18 @@ impl Logging {
     }
     /// debug
     pub fn debug(&self, msg: &str) {
+        let dt = Local::now();
+        let naive_utc = dt.naive_utc();
+        let offset = dt.offset().clone();
+        let dt_new = DateTime::<Local>::from_naive_utc_and_offset(naive_utc, offset);
+
         if self.log_level == Level::DEBUG || self.log_level == Level::TRACE {
-            println!("\x1b[1;92m {} \x1b[0m : {}", "DEBUG", msg);
+            println!(
+                "\x1b[1;92m [ {} {} ] \x1b[0m  : {}",
+                "DEBUG",
+                dt_new.to_rfc3339(),
+                msg
+            );
         }
     }
     /// info with highlight
@@ -95,8 +105,18 @@ impl Logging {
     }
     /// trace
     pub fn trace(&self, msg: &str) {
+        let dt = Local::now();
+        let naive_utc = dt.naive_utc();
+        let offset = dt.offset().clone();
+        let dt_new = DateTime::<Local>::from_naive_utc_and_offset(naive_utc, offset);
+
         if self.log_level == Level::TRACE {
-            println!("\x1b[1;96m {} \x1b[0m : {}", "TRACE", msg);
+            println!(
+                "\x1b[1;96m [ {} {} ] \x1b[0m : {}",
+                "TRACE",
+                dt_new.to_rfc3339(),
+                msg
+            );
         }
     }
     /// warning
