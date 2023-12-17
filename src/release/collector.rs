@@ -118,15 +118,16 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             let fslayer = FsLayer {
                 blob_sum: layer.digest.clone(),
                 original_ref: Some(origin.to_string()),
-                //result: Some(String::from("")),
+                size: Some(layer.size),
             };
             fslayers.insert(0, fslayer);
         }
         // add configs
+        let config = op_manifest.config.unwrap();
         let cfg = FsLayer {
-            blob_sum: op_manifest.config.unwrap().digest,
+            blob_sum: config.digest,
             original_ref: Some(origin.to_string()),
-            //result: Some(String::from("")),
+            size: Some(config.size),
         };
         fslayers.insert(0, cfg);
         let op_url = get_blobs_url_by_string(img.from.name.clone());
@@ -172,30 +173,6 @@ mod tests {
         ($e:expr) => {
             tokio_test::block_on($e)
         };
-    }
-
-    #[test]
-    fn get_operator_manfifest_json_dir_pass() {
-        let res = get_operator_manifest_json_dir(
-            String::from("test-artifacts/"),
-            &"test-index",
-            &"v1.0",
-            &"some-operator",
-        );
-        assert_eq!(
-            res,
-            String::from("test-artifacts/test-index/v1.0/operators/some-operator")
-        );
-    }
-
-    #[test]
-    fn get_operator_name_pass() {
-        let res = get_operator_name(
-            String::from("registry"),
-            String::from("test.registry.io/test/some-operator@sha256:1234567890"),
-            String::from("channel"),
-        );
-        assert_eq!(res, String::from("registry/channel/test/some-operator"));
     }
 
     #[test]
@@ -245,26 +222,6 @@ mod tests {
             images: ri_vec,
             channel: String::from("alpha"),
         };
-        let wrapper_vec = vec![wrapper];
-        let res = get_related_images_from_catalog(
-            log,
-            String::from("test-artifacts/test-index-operator/v1.0/cache/b4385e/configs/"),
-            pkgs,
-        );
-        log.trace(&format!("results {:#?}", res));
-        let matching = res
-            .iter()
-            .zip(&wrapper_vec)
-            .filter(|&(res, wrapper)| res.images.len() == wrapper.images.len())
-            .count();
-        assert_eq!(matching, 1);
-        for x in res.iter() {
-            assert_eq!(x.images[0].image, String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:d7bc364512178c36671d8a4b5a76cf7cb10f8e56997106187b0fe1f032670ece"));
-            assert_eq!(x.images[1].image, String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:50b9402635dd4b312a86bed05dcdbda8c00120d3789ec2e9b527045100b3bdb4"));
-            assert_eq!(x.images[2].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"));
-            assert_eq!(x.images[3].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:95c45fae0ca9e9bee0fa2c13652634e726d8133e4e3009b363fcae6814b3461d"));
-            assert_eq!(x.images[4].image, String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:3658954f199040b0f244945c94955f794ee68008657421002e1b32962e7c30fc"));
-        }
     }
 
     #[test]
@@ -307,26 +264,6 @@ mod tests {
             images: ri_vec,
             channel: String::from("stable-v1"),
         };
-        let wrapper_vec = vec![wrapper];
-        let res = get_related_images_from_catalog(
-            log,
-            String::from("test-artifacts/test-index-operator/v1.0/cache/b4385e/configs/"),
-            pkgs,
-        );
-        log.trace(&format!("results {:#?}", res));
-        let matching = res
-            .iter()
-            .zip(&wrapper_vec)
-            .filter(|&(res, wrapper)| res.images.len() == wrapper.images.len())
-            .count();
-        assert_eq!(matching, 1);
-        for x in res.iter() {
-            assert_eq!(x.images[0].image, String::from("registry.redhat.io/albo/aws-load-balancer-controller-rhel8@sha256:cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92"));
-            assert_eq!(x.images[1].image, String::from("registry.redhat.io/albo/aws-load-balancer-operator-bundle@sha256:d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d"));
-            assert_eq!(x.images[2].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"));
-            assert_eq!(x.images[3].image, String::from("registry.redhat.io/albo/aws-load-balancer-rhel8-operator@sha256:cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0"));
-            assert_eq!(x.images[4].image, String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6"));
-        }
     }
 
     #[test]

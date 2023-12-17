@@ -153,15 +153,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 let fslayer = FsLayer {
                                     blob_sum: layer.digest.clone(),
                                     original_ref: Some(imgs.image.clone()),
-                                    //result: Some(String::from("")),
+                                    size: Some(layer.size),
                                 };
                                 fslayers.insert(0, fslayer);
                             }
                             // add configs
+                            let config = op_manifest.config.unwrap();
                             let cfg = FsLayer {
-                                blob_sum: op_manifest.config.unwrap().digest,
+                                blob_sum: config.digest,
                                 original_ref: Some(imgs.image.clone()),
-                                //result: Some(String::from("")),
+                                size: Some(config.size),
                             };
                             fslayers.insert(0, cfg);
                         }
@@ -178,15 +179,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         let fslayer = FsLayer {
                             blob_sum: layer.digest.clone(),
                             original_ref: Some(imgs.image.clone()),
-                            //result: Some(String::from("")),
+                            size: Some(layer.size),
                         };
                         fslayers.insert(0, fslayer);
                     }
                     // add configs
+                    let config = op_manifest.config.unwrap();
                     let cfg = FsLayer {
-                        blob_sum: op_manifest.config.unwrap().digest,
+                        blob_sum: config.digest,
                         original_ref: Some(imgs.image.clone()),
-                        //result: Some(String::from("")),
+                        size: Some(config.size),
                     };
                     fslayers.insert(0, cfg);
                 }
