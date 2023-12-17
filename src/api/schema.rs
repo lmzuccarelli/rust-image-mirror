@@ -143,7 +143,7 @@ pub struct History {
 pub struct FsLayer {
     pub blob_sum: String,
     pub original_ref: Option<String>,
-    //pub result: Option<String>,
+    pub size: Option<i64>,
 }
 
 // used to add path and arch (platform) info for mirroring

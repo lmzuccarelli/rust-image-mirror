@@ -69,9 +69,18 @@ impl RegistryInterface for ImplRegistryInterface {
             // truncate sha256:
             let truncated_image = img.blob_sum.split(":").nth(1).unwrap();
             let inner_blobs_file = get_blobs_file(dir.clone(), &truncated_image);
-            let exist = Path::new(&inner_blobs_file).exists();
+            let mut exists = Path::new(&inner_blobs_file).exists();
+            if exists {
+                let metadata = fs::metadata(&inner_blobs_file).unwrap();
+                if img.size.is_some() {
+                    if metadata.len() != img.size.unwrap() as u64 {
+                        exists = false;
+                    }
+                }
+            }
+
             // filter out duplicates
-            if !seen.contains(&truncated_image) && !exist {
+            if !seen.contains(&truncated_image) && !exists {
                 seen.insert(truncated_image);
                 if url == "" {
                     let img_orig = img.original_ref.clone().unwrap();
@@ -79,14 +88,14 @@ impl RegistryInterface for ImplRegistryInterface {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(img_ref),
-                        //result: Some(String::from("")),
+                        size: img.size,
                     };
                     images.push(layer);
                 } else {
                     let layer = FsLayer {
                         blob_sum: img.blob_sum.clone(),
                         original_ref: Some(url.clone()),
-                        //result: Some(String::from("")),
+                        size: img.size,
                     };
                     images.push(layer);
                 }
@@ -463,7 +472,7 @@ mod tests {
         let fslayer = FsLayer {
             blob_sum: String::from("sha256:1234567890"),
             original_ref: Some(url.clone()),
-            //result: Some(String::from("")),
+            size: Some(112),
         };
         let fslayers = vec![fslayer];
         let log = &Logging {
