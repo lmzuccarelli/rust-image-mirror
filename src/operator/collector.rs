@@ -6,6 +6,9 @@ use crate::log::logging::*;
 use crate::manifests::catalogs::*;
 
 use std::fs;
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
 use walkdir::WalkDir;
 
 // collect all operator images
@@ -15,11 +18,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     dir: String,
     operators: Vec<Operator>,
 ) {
-    log.info("operator collector mode: mirrorToDisk");
+    log.hi("operator collector mode: mirrorToDisk");
 
     // parse the config - iterate through each catalog
     let img_ref = parse_image_index(log, operators);
-    log.debug(&format!("Image refs {:#?}", img_ref));
+    log.debug(&format!("image refs {:#?}", img_ref));
 
     for ir in img_ref {
         let manifest_json = get_manifest_json_file(
@@ -38,38 +41,53 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             .unwrap();
 
         // create the full path
-        // TODO:
         let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
         log.info(&format!("manifest directory {}", manifest_dir));
         fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
-        fs::write(manifest_json, manifest.clone())
-            .expect("unable to write (index) manifest.json file");
-        let res = parse_json_manifest(manifest).unwrap();
-        let blobs_url = get_blobs_url(ir.clone());
-        // use a concurrent process to get related blobs
+        let mut exists = Path::new(&manifest_json).exists();
+        let res_manifest_in_mem = parse_json_manifest(manifest.clone()).unwrap();
+        let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
         let sub_dir = dir.clone() + "/blobs-store/";
-        reg_con
-            .get_blobs(
+        if exists {
+            let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
+            let res_manifest_on_disk = parse_json_manifest(manifest_on_disk).unwrap();
+            if res_manifest_on_disk != res_manifest_in_mem {
+                exists = false;
+            }
+        }
+        if !exists {
+            log.info("detected change in index manifest");
+            fs::write(manifest_json, manifest.clone())
+                .expect("unable to write (index) manifest.json file");
+            let blobs_url = get_blobs_url(ir.clone());
+            // use a concurrent process to get related blobs
+            reg_con
+                .get_blobs(
+                    log,
+                    sub_dir.clone(),
+                    blobs_url,
+                    token.clone(),
+                    res_manifest_in_mem.fs_layers.clone(),
+                )
+                .await;
+            log.info("completed image index download");
+            // detected a change so clean the dir contents
+            rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
+            // re-create the cache directory
+            let mut builder = DirBuilder::new();
+            builder.mode(0o755);
+            builder
+                .create(&working_dir_cache)
+                .expect("unable to create directory");
+            untar_layers(
                 log,
                 sub_dir.clone(),
-                blobs_url,
-                token.clone(),
-                res.fs_layers.clone(),
+                working_dir_cache.clone(),
+                res_manifest_in_mem.fs_layers,
             )
             .await;
-        log.info("completed image index download");
-
-        let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
-        // create the cache directory
-        fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
-        untar_layers(
-            log,
-            sub_dir.clone(),
-            working_dir_cache.clone(),
-            res.fs_layers,
-        )
-        .await;
-        log.hi("completed untar of layers");
+            log.hi("completed untar of layers");
+        }
 
         // find the directory 'configs'
         // TODO if new blobs are downloaded the config dir could be in another blob
@@ -95,7 +113,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     imgs.image.clone(),
                     wrapper.channel.clone(),
                 );
-                log.debug(&format!("operator name {:#?}", op_name));
+                log.info(&format!("manifest for operator {:#?}", op_name));
                 let op_dir =
                     get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &op_name);
                 fs::create_dir_all(op_dir.clone()).expect("should create full operator path");
@@ -109,13 +127,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     .get_manifest(manifest_url.clone(), token.clone())
                     .await
                     .unwrap();
+
                 log.trace(&format!("manifest contents {:#?}", manifest));
                 // check if the manifest is of type list
                 let manifest_list = parse_json_manifestlist(manifest.clone());
+                log.trace(&format!("manifest list {:#?}", manifest_list));
                 fs::create_dir_all(&op_dir).expect("unable to create operator manifest directory");
                 let mut fslayers = Vec::new();
                 if manifest_list.is_ok() {
                     let ml = manifest_list.unwrap().clone();
+                    log.trace(&format!("manifest list detected {:#?}", ml));
                     if ml.media_type == "application/vnd.docker.distribution.manifest.list.v2+json"
                     {
                         fs::write(op_dir.clone() + "/manifest-list.json", manifest.clone())
@@ -219,7 +240,7 @@ pub async fn operator_disk_to_mirror<T: RegistryInterface>(
     // build the list
     // call push_blobs
     let mut mirror_manifests = vec![];
-    log.info("operator collector mode: diskToMirror");
+    log.hi("operator collector mode: diskToMirror");
     for op in operators.iter() {
         log.info(&format!("catalog {:#?} ", &op.catalog));
         for pkg in op.packages.clone().unwrap().iter() {

@@ -165,24 +165,34 @@ impl RegistryInterface for ImplRegistryInterface {
 
         // we iterate through all the layers
         for blob in manifest.clone().layers.unwrap().iter() {
-            let _process_res = process_blob(
+            let process_res = process_blob(
                 log,
                 &blob,
                 url.clone(),
                 sub_component.clone(),
                 token.clone(),
-            );
+            )
+            .await;
+            log.debug(&format!(
+                "processed blob sttaus {} : {:#?}",
+                process_res, blob.digest
+            ));
         }
 
         // mirror the config blob
         let blob = manifest.clone().config.unwrap();
-        let _process_res = process_blob(
+        let process_res = process_blob(
             log,
             &blob,
             url.clone(),
             sub_component.clone(),
             token.clone(),
-        );
+        )
+        .await;
+
+        if process_res != String::from("ok") {
+            return String::from("ko process_blob for config layer failed");
+        }
 
         // finally push the manifest
         let serialized_manifest = serde_json::to_string(&manifest.clone()).unwrap();
@@ -207,13 +217,15 @@ impl RegistryInterface for ImplRegistryInterface {
             )
             .header("Content-Length", serialized_manifest.len())
             .send()
-            .await
-            .unwrap();
+            .await;
 
-        log.info(&format!(
-            "result for manifest {} {}",
-            res_put.status(),
-            sub_component
+        let result = res_put.unwrap();
+        log.info(&format!("processed image {}", str_digest));
+        log.debug(&format!(
+            "result for manifest {:#?} {} {}",
+            result.error_for_status(),
+            sub_component,
+            put_url.clone() + &str_digest.clone()[0..7]
         ));
 
         String::from("ok")
@@ -263,7 +275,7 @@ pub async fn process_blob(
     let response = res.unwrap();
 
     if response.status() != StatusCode::ACCEPTED {
-        return String::from("ko");
+        return String::from("initial post ko");
     }
 
     log.debug(&format!("headers {:#?}", response.headers()));
@@ -294,7 +306,7 @@ pub async fn process_blob(
         let mut vec = Vec::new();
         let _buf = file.read_to_end(&mut vec).await.unwrap();
         let url = location.to_str().unwrap().to_string() + &"&digest=" + &blob.digest;
-        log.trace(&format!(
+        log.info(&format!(
             "content length  {:#?} {:#?}",
             vec.clone().len(),
             &blob.digest
@@ -305,13 +317,17 @@ pub async fn process_blob(
             .header("Content-Type", "application/octet-stream")
             .header("Content-Length", vec.len())
             .send()
-            .await
-            .unwrap();
+            .await;
 
-        log.info(&format!("result from put blob {:#?}", res_put));
+        let res_final = res_put.unwrap();
 
-        if response.status() != StatusCode::OK || response.status() != StatusCode::ACCEPTED {
-            return String::from("ko");
+        log.debug(&format!("result from put blob {:#?}", res_final.status()));
+
+        if res_final.status() > StatusCode::CREATED {
+            return String::from(&format!(
+                "put blob failed ko with code {}",
+                res_final.status(),
+            ));
         }
     }
     String::from("ok")

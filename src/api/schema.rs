@@ -57,22 +57,21 @@ pub struct MetaData {
     pub creation: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ManifestList {
+    //#[serde(rename = "schemaVersion")]
+    //pub schema_version: Option<i64>,
     #[serde(rename = "manifests")]
     pub manifests: Vec<Manifest>,
 
     #[serde(rename = "mediaType")]
     pub media_type: String,
-
-    #[serde(rename = "schemaVersion")]
-    pub schema_version: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Manifest {
     #[serde(rename = "schemaVersion")]
-    pub schema_version: i64,
+    pub schema_version: Option<i64>,
 
     #[serde(rename = "digest")]
     pub digest: Option<String>,
@@ -218,6 +217,16 @@ pub struct RegistryRedhatIo {
     pub email: Option<String>,
 }
 
+// skip enums
+#[derive(Eq, PartialEq)]
+pub enum Skip {
+    RELEASE,
+    OPERATORS,
+    ADDITIONAL,
+    RELOPS,
+    NONE,
+}
+
 /// rust-container-tool cli struct
 #[derive(Parser, Debug)]
 #[command(name = "rust-image-mirror")]
@@ -250,6 +259,11 @@ pub struct Cli {
         default_value = "file://temp"
     )]
     pub destination: String,
+
+    /// set the skip flag. Valid arguments are none, release, operators, additional,
+    /// release-operators
+    #[arg(value_enum, long, value_name = "skip", default_value = "none")]
+    pub skip: Option<String>,
 }
 
 /// config schema

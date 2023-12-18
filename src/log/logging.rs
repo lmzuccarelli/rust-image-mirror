@@ -1,5 +1,6 @@
 // module logging
 use chrono::{DateTime, Local};
+
 // logging convenience functions
 #[derive(Eq, PartialEq)]
 pub enum Level {
@@ -112,7 +113,7 @@ impl Logging {
 
         if self.log_level == Level::TRACE {
             println!(
-                "\x1b[1;96m [ {} {} ] \x1b[0m : {}",
+                "\x1b[1;96m [ {} {} ] \x1b[0m  : {}",
                 "TRACE",
                 dt_new.to_rfc3339(),
                 msg

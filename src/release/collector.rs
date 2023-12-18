@@ -6,6 +6,7 @@ use crate::log::logging::*;
 use crate::manifests::catalogs::*;
 
 use std::fs;
+use walkdir::WalkDir;
 
 // collect all operator images
 pub async fn release_mirror_to_disk<T: RegistryInterface>(
@@ -14,7 +15,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     dir: String,
     release: String,
 ) {
-    log.info("release collector mode: mirrorToDisk");
+    log.hi("release collector mode: mirrorToDisk");
 
     // parse the config - iterate through each release image index
     let img_ref = parse_release_image_index(log, release);
@@ -148,19 +149,78 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 }
 
 pub async fn release_disk_to_mirror<T: RegistryInterface>(
-    _reg_con: T,
-    _log: &Logging,
-    _dir: String,
-    _destination_url: String,
-    _operators: String,
+    reg_con: T,
+    log: &Logging,
+    dir: String,
+    destination_url: String,
+    release: String,
 ) -> String {
+    let release_dir = dir.clone() + &get_dir_from_isc(release);
+    log.debug(&format!("release directory {}", release_dir.clone()));
+    let manifests = get_all_assosciated_manifests(log, release_dir);
+    // using map and collect are not async
+    // let mm = manifests[0].clone();
+    for mm in manifests.iter() {
+        // we can infer some info from the manifest
+        let binding = mm.to_string();
+        //let rd = get_registry_details_from_manifest(binding.clone());
+        //log.trace(&format!("metadata for manifest {:#?}", rd));
+        let manifest = get_release_manifest(binding.clone());
+        log.trace(&format!("manifest struct {:#?}", manifest));
+        log.trace(&format!("directory {}", binding));
+        let res = reg_con
+            .push_image(
+                log,
+                String::from("ocp-release"),
+                destination_url.clone(),
+                String::from(""),
+                manifest.clone(),
+            )
+            .await;
+        if res != String::from("ok") {
+            return res.to_string();
+        }
+    }
     String::from("ok")
+}
+
+fn get_dir_from_isc(release: String) -> String {
+    let res = release.split("/");
+    let collection = res.clone().collect::<Vec<&str>>();
+    let name = collection[2].split(":");
+    let result = name.clone().nth(0).unwrap().to_string()
+        + "/"
+        + name.clone().nth(1).unwrap()
+        + &"/release/";
+    result
 }
 
 fn get_release_json(dir: String) -> ReleaseSchema {
     let data = fs::read_to_string(&dir).expect("should read release-reference json file");
     let release_schema = parse_json_release_imagereference(data).unwrap();
     release_schema
+}
+
+fn get_release_manifest(dir: String) -> Manifest {
+    let data = fs::read_to_string(&dir).expect("should read release-operator-manifest json file");
+    let release_manifest = parse_json_manifest_operator(data).unwrap();
+    release_manifest
+}
+
+fn get_all_assosciated_manifests(log: &Logging, dir: String) -> Vec<String> {
+    let mut vec_manifests: Vec<String> = vec![];
+    let result = WalkDir::new(&dir);
+    for file in result.into_iter().filter_map(|file| file.ok()) {
+        if file.metadata().unwrap().is_file() & !file.path().display().to_string().contains("list")
+        {
+            log.trace(&format!(
+                "assosciated manifest found {:#?}",
+                file.path().display().to_string()
+            ));
+            vec_manifests.insert(0, file.path().display().to_string());
+        }
+    }
+    vec_manifests
 }
 
 #[cfg(test)]

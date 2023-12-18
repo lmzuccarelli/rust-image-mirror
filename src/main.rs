@@ -1,9 +1,5 @@
-// use auth::credentials::get_token;
-// use batch::copy::get_blobs;
 // use modules
 use clap::Parser;
-use operator::collector::*;
-use release::collector::*;
 use std::collections::HashSet;
 use std::path::Path;
 use tokio;
@@ -25,6 +21,8 @@ use api::schema::*;
 use config::read::*;
 use diff::metadata_cache::*;
 use log::logging::*;
+use operator::collector::*;
+use release::collector::*;
 
 // main entry point (use async)
 #[tokio::main]
@@ -32,23 +30,40 @@ async fn main() {
     let args = Cli::parse();
     let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
+    let skip = args.skip.unwrap().to_string();
 
     // convert to enum
-    let res = match level.as_str() {
+    let res_log_level = match level.as_str() {
         "info" => Level::INFO,
         "debug" => Level::DEBUG,
         "trace" => Level::TRACE,
         _ => Level::INFO,
     };
 
-    let log = &Logging { log_level: res };
+    // convert to enum
+    let res_skip = match skip.as_str() {
+        "release" => Skip::RELEASE,
+        "operators" => Skip::OPERATORS,
+        "additional" => Skip::ADDITIONAL,
+        "release-operators" => Skip::RELOPS,
+        _ => Skip::NONE,
+    };
 
+    // setup logging
+    let log = &Logging {
+        log_level: res_log_level,
+    };
+
+    // check that destination is set correctly
     if args.destination == "" {
-        log.error("destination is mandotory use docker:// or file:// prefix");
+        log.error("destination is mandatory use docker:// or file:// prefix");
         std::process::exit(exitcode::USAGE);
     }
 
     log.info(&format!("rust-image-mirror {} ", cfg));
+    if res_skip != Skip::NONE {
+        log.hi(&format!("skipping {}", skip));
+    }
     let mut current_cache = HashSet::new();
 
     if args.diff_tar.unwrap() {
@@ -66,13 +81,16 @@ async fn main() {
         isc_config.mirror.operators
     ));
 
-    // detect the mode
+    // initialize the client request interface
     let reg_con = ImplRegistryInterface {};
 
     // this is mirrorToDisk
     if args.destination.contains("file://") {
         // check for release image
-        if isc_config.mirror.release.is_some() {
+        if isc_config.mirror.release.is_some()
+            && res_skip != Skip::RELEASE
+            && res_skip != Skip::RELOPS
+        {
             release_mirror_to_disk(
                 reg_con.clone(),
                 log,
@@ -81,8 +99,11 @@ async fn main() {
             )
             .await;
         }
-
-        if isc_config.mirror.operators.is_some() {
+        // check for operators
+        if isc_config.mirror.operators.is_some()
+            && res_skip != Skip::OPERATORS
+            && res_skip != Skip::RELOPS
+        {
             operator_mirror_to_disk(
                 reg_con.clone(),
                 log,
@@ -129,22 +150,26 @@ async fn main() {
     } else {
         // this is diskToMirror
         let destination = args.destination;
-        release_disk_to_mirror(
-            reg_con.clone(),
-            log,
-            String::from("./working-dir/"),
-            destination.clone(),
-            isc_config.mirror.release.unwrap(),
-        )
-        .await;
+        if res_skip != Skip::RELEASE && res_skip != Skip::RELOPS {
+            release_disk_to_mirror(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                destination.clone(),
+                isc_config.mirror.release.unwrap(),
+            )
+            .await;
+        }
 
-        operator_disk_to_mirror(
-            reg_con.clone(),
-            log,
-            String::from("./working-dir/"),
-            destination.clone(),
-            isc_config.mirror.operators.unwrap(),
-        )
-        .await;
+        if res_skip != Skip::OPERATORS && res_skip != Skip::RELOPS {
+            operator_disk_to_mirror(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                destination.clone(),
+                isc_config.mirror.operators.unwrap(),
+            )
+            .await;
+        }
     }
 }
