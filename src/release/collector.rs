@@ -6,6 +6,9 @@ use crate::log::logging::*;
 use crate::manifests::catalogs::*;
 
 use std::fs;
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
 use walkdir::WalkDir;
 
 // collect all operator images
@@ -17,16 +20,12 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 ) {
     log.hi("release collector mode: mirrorToDisk");
 
-    // parse the config - iterate through each release image index
+    // parse the config
     let img_ref = parse_release_image_index(log, release);
     log.debug(&format!("image refs {:#?}", img_ref));
 
-    let manifest_json = get_manifest_json_file(
-        // ./working-dir
-        dir.clone(),
-        img_ref.name.clone(),
-        img_ref.version.clone(),
-    );
+    let manifest_json =
+        get_manifest_json_file(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
     log.trace(&format!("manifest json file {}", manifest_json));
     let token = get_token(log, img_ref.clone().registry).await;
     let manifest_url = get_image_manifest_url(img_ref.clone());
@@ -36,40 +35,62 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         .await
         .unwrap();
 
-    // create the full path
-    // TODO:
     let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
     log.info(&format!("manifest directory {}", manifest_dir));
     fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
-    fs::write(manifest_json, manifest.clone()).expect("unable to write (index) manifest.json file");
-    let res = parse_json_manifest(manifest).unwrap();
-    let blobs_url = get_blobs_url(img_ref.clone());
-
-    // use a concurrent process to get related blobs
-    let sub_dir = dir.clone() + "/blobs-store/";
-    reg_con
-        .get_blobs(
-            log,
-            sub_dir.clone(),
-            blobs_url,
-            token.clone(),
-            res.fs_layers.clone(),
-        )
-        .await;
-    log.info("completed image index download");
-
+    let manifest_exists = Path::new(&manifest_json).exists();
+    let res_manifest_in_mem = parse_json_manifest(manifest.clone()).unwrap();
     let working_dir_cache =
         get_cache_dir(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
-    // create the cache directory
-    fs::create_dir_all(&working_dir_cache).expect("unable to create directory");
-    untar_layers(
-        log,
-        sub_dir.clone(),
-        working_dir_cache.clone(),
-        res.fs_layers,
-    )
-    .await;
-    log.hi("completed untar of layers");
+    let cache_exists = Path::new(&working_dir_cache).exists();
+    let sub_dir = dir.clone() + "/blobs-store/";
+    let mut exists = true;
+    if manifest_exists {
+        let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
+        let res_manifest_on_disk = parse_json_manifest(manifest_on_disk).unwrap();
+        if res_manifest_on_disk != res_manifest_in_mem || !cache_exists {
+            exists = false;
+        }
+    }
+
+    if !exists {
+        log.info("detected change in index manifest");
+        fs::write(manifest_json, manifest.clone())
+            .expect("unable to write (index) manifest.json file");
+        let blobs_url = get_blobs_url(img_ref.clone());
+        // use a concurrent process to get related blobs
+        let response = reg_con
+            .get_blobs(
+                log,
+                sub_dir.clone(),
+                blobs_url,
+                token.clone(),
+                res_manifest_in_mem.fs_layers.clone(),
+            )
+            .await;
+        log.info(&format!(
+            "completed release image index download {:#?}",
+            response
+        ));
+        if cache_exists {
+            rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
+            // re-create the cache directory
+            let mut builder = DirBuilder::new();
+            builder.mode(0o777);
+            builder
+                .create(&working_dir_cache)
+                .expect("unable to create directory");
+        }
+
+        untar_layers(
+            log,
+            sub_dir.clone(),
+            working_dir_cache.clone(),
+            res_manifest_in_mem.fs_layers,
+        )
+        .await;
+        log.hi("completed untar of layers");
+    }
 
     // find the directory 'release-manifests'
     let config_dir = find_dir(
@@ -106,9 +127,23 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             .await
             .unwrap();
 
-        log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+        log.info(&format!("checking manifest for {:#?}", img.name.clone()));
         log.trace(&format!("manifest contents {:#?}", manifest));
-
+        let release_op = release_op_dir.clone() + "/manifest.json";
+        let metadata = fs::metadata(release_op);
+        // TODO: surely there is a better way ;)
+        if metadata.is_ok() {
+            let meta = metadata.as_ref().unwrap();
+            if meta.len() != manifest.len() as u64 {
+                log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+                fs::write(release_op_dir + "/manifest.json", manifest.clone())
+                    .expect("unable to write manifest.json file");
+            }
+        } else if metadata.is_err() {
+            log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+            fs::write(release_op_dir + "/manifest.json", manifest.clone())
+                .expect("unable to write manifest.json file");
+        }
         let mut fslayers = Vec::new();
         let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
         let origin_tmp = img.from.name.split("@");
@@ -136,7 +171,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         log.trace(&format!("blobs_url {}", op_url));
         log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
 
-        reg_con
+        let _res = reg_con
             .get_blobs(
                 log,
                 blobs_dir.clone(),
@@ -168,7 +203,7 @@ pub async fn release_disk_to_mirror<T: RegistryInterface>(
         let manifest = get_release_manifest(binding.clone());
         log.trace(&format!("manifest struct {:#?}", manifest));
         log.trace(&format!("directory {}", binding));
-        let res = reg_con
+        let _res = reg_con
             .push_image(
                 log,
                 String::from("ocp-release"),
@@ -177,9 +212,6 @@ pub async fn release_disk_to_mirror<T: RegistryInterface>(
                 manifest.clone(),
             )
             .await;
-        if res != String::from("ok") {
-            return res.to_string();
-        }
     }
     String::from("ok")
 }
@@ -237,7 +269,7 @@ mod tests {
 
     #[test]
     fn get_related_images_from_catalog_with_channel_pass() {
-        let log = &Logging {
+        let _log = &Logging {
             log_level: Level::TRACE,
         };
         let ic = IncludeChannel {
@@ -254,7 +286,7 @@ mod tests {
             max_version: None,
             min_bundle: None,
         };
-        let pkgs = vec![pkg];
+        let _pkgs = vec![pkg];
 
         let ir1 = RelatedImage {
             name: String::from("controller"),
@@ -277,7 +309,7 @@ mod tests {
             image: String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:3658954f199040b0f244945c94955f794ee68008657421002e1b32962e7c30fc"),
         };
         let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
-        let wrapper = RelatedImageWrapper {
+        let _wrapper = RelatedImageWrapper {
             name: String::from("test"),
             images: ri_vec,
             channel: String::from("alpha"),
@@ -286,7 +318,7 @@ mod tests {
 
     #[test]
     fn get_related_images_from_catalog_no_channel_pass() {
-        let log = &Logging {
+        let _log = &Logging {
             log_level: Level::INFO,
         };
         let pkg = Package {
@@ -296,7 +328,7 @@ mod tests {
             max_version: None,
             min_bundle: None,
         };
-        let pkgs = vec![pkg];
+        let _pkgs = vec![pkg];
 
         let ir1 = RelatedImage {
             name: String::from("controller"),
@@ -319,7 +351,7 @@ mod tests {
             image: String::from("registry.redhat.io/openshift4/ose-kube-rbac-proxy@sha256:422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6"),
         };
         let ri_vec = vec![ir1, ir2, ir3, ir4, ir5];
-        let wrapper = RelatedImageWrapper {
+        let _wrapper = RelatedImageWrapper {
             name: String::from("test"),
             images: ri_vec,
             channel: String::from("stable-v1"),
@@ -334,7 +366,7 @@ mod tests {
 
         // we set up a mock server for the auth-credentials
         let mut server = mockito::Server::new();
-        let url = server.url();
+        let _url = server.url();
 
         // Create a mock
         server
@@ -360,7 +392,7 @@ mod tests {
         };
 
         let pkgs = vec![pkg];
-        let op = Operator {
+        let _op = Operator {
             catalog: String::from("test.registry.io/test/test-index-operator:v1.0"),
             packages: Some(pkgs),
         };
@@ -426,9 +458,9 @@ mod tests {
                 _url: String,
                 _token: String,
                 _layers: Vec<FsLayer>,
-            ) -> String {
+            ) -> Result<String, Box<dyn std::error::Error>> {
                 log.info("testing logging in fake test");
-                String::from("test")
+                Ok(String::from("test"))
             }
 
             async fn push_image(
@@ -438,9 +470,9 @@ mod tests {
                 _url: String,
                 _token: String,
                 _manifest: Manifest,
-            ) -> String {
+            ) -> Result<String, Box<dyn std::error::Error>> {
                 log.info("testing logging in fake test");
-                String::from("test")
+                Ok(String::from("test"))
             }
         }
 

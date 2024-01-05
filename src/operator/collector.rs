@@ -44,14 +44,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
         let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
         log.info(&format!("manifest directory {}", manifest_dir));
         fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
-        let mut exists = Path::new(&manifest_json).exists();
+        let manifest_exists = Path::new(&manifest_json).exists();
         let res_manifest_in_mem = parse_json_manifest(manifest.clone()).unwrap();
         let working_dir_cache = get_cache_dir(dir.clone(), ir.name.clone(), ir.version.clone());
+        let cache_exists = Path::new(&working_dir_cache).exists();
         let sub_dir = dir.clone() + "/blobs-store/";
-        if exists {
+        let mut exists = true;
+        if manifest_exists {
             let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
             let res_manifest_on_disk = parse_json_manifest(manifest_on_disk).unwrap();
-            if res_manifest_on_disk != res_manifest_in_mem {
+            if res_manifest_on_disk != res_manifest_in_mem || !cache_exists {
                 exists = false;
             }
         }
@@ -61,7 +63,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 .expect("unable to write (index) manifest.json file");
             let blobs_url = get_blobs_url(ir.clone());
             // use a concurrent process to get related blobs
-            reg_con
+            let response = reg_con
                 .get_blobs(
                     log,
                     sub_dir.clone(),
@@ -70,15 +72,17 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     res_manifest_in_mem.fs_layers.clone(),
                 )
                 .await;
-            log.info("completed image index download");
+            log.info(&format!("completed image index download {:#?}", response));
             // detected a change so clean the dir contents
-            rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
-            // re-create the cache directory
-            let mut builder = DirBuilder::new();
-            builder.mode(0o755);
-            builder
-                .create(&working_dir_cache)
-                .expect("unable to create directory");
+            if cache_exists {
+                rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
+                // re-create the cache directory
+                let mut builder = DirBuilder::new();
+                builder.mode(0o777);
+                builder
+                    .create(&working_dir_cache)
+                    .expect("unable to create directory");
+            }
             untar_layers(
                 log,
                 sub_dir.clone(),
@@ -90,7 +94,6 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
         }
 
         // find the directory 'configs'
-        // TODO if new blobs are downloaded the config dir could be in another blob
         let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
         log.mid(&format!(
             "full path for directory 'configs' {} ",
@@ -113,7 +116,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     imgs.image.clone(),
                     wrapper.channel.clone(),
                 );
-                log.info(&format!("manifest for operator {:#?}", op_name));
+                log.info(&format!("writing manifest for operator {:#?}", op_name));
                 let op_dir =
                     get_operator_manifest_json_dir(dir.clone(), &ir.name, &ir.version, &op_name);
                 fs::create_dir_all(op_dir.clone()).expect("should create full operator path");
@@ -214,7 +217,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     fslayers.insert(0, cfg);
                 }
                 let op_url = get_blobs_url_by_string(imgs.image.clone());
-                reg_con
+                let _response = reg_con
                     .get_blobs(
                         log,
                         sub_dir.clone(),
@@ -655,7 +658,7 @@ mod tests {
 
         // we set up a mock server for the auth-credentials
         let mut server = mockito::Server::new();
-        let url = server.url();
+        let _url = server.url();
 
         // Create a mock
         server
@@ -747,9 +750,9 @@ mod tests {
                 _url: String,
                 _token: String,
                 _layers: Vec<FsLayer>,
-            ) -> String {
+            ) -> Result<String, Box<dyn std::error::Error>> {
                 log.info("testing logging in fake test");
-                String::from("test")
+                Ok(String::from("test"))
             }
 
             async fn push_image(
@@ -759,9 +762,9 @@ mod tests {
                 _url: String,
                 _token: String,
                 _manifest: Manifest,
-            ) -> String {
+            ) -> Result<String, Box<dyn std::error::Error>> {
                 log.info("testing logging in fake test");
-                String::from("test")
+                Ok(String::from("test"))
             }
         }
 

@@ -122,13 +122,33 @@ impl Logging {
     }
     /// warning
     pub fn warn(&self, msg: &str) {
+        let dt = Local::now();
+        let naive_utc = dt.naive_utc();
+        let offset = dt.offset().clone();
+        let dt_new = DateTime::<Local>::from_naive_utc_and_offset(naive_utc, offset);
+
         if self.log_level == Level::WARN || self.log_level == Level::INFO {
-            println!("\x1b[1;93m {} \x1b[0m  : {}", "WARN", msg);
+            println!(
+                "\x1b[1;93m [ {}  {} ] \x1b[0m  : {}",
+                "WARN",
+                dt_new.to_rfc3339(),
+                msg
+            );
         }
     }
     /// error
     pub fn error(&self, msg: &str) {
-        println!("\x1b[1;91m {} \x1b[0m : {}", "ERROR", msg);
+        let dt = Local::now();
+        let naive_utc = dt.naive_utc();
+        let offset = dt.offset().clone();
+        let dt_new = DateTime::<Local>::from_naive_utc_and_offset(naive_utc, offset);
+
+        println!(
+            "\x1b[1;91m [ {} {} ] \x1b[0m  : {}",
+            "ERROR",
+            dt_new.to_rfc3339(),
+            msg
+        );
     }
 }
 

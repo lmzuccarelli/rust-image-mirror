@@ -12,6 +12,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 use crate::api::schema::*;
+use crate::error::handler::*;
 use crate::log::logging::*;
 
 #[async_trait]
@@ -22,6 +23,7 @@ impl RegistryInterface for ImplRegistryInterface {
         token: String,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let client = Client::new();
+        // check without token
         if token.len() == 0 {
             let body = client
                 .get(url)
@@ -58,7 +60,7 @@ impl RegistryInterface for ImplRegistryInterface {
         url: String,
         token: String,
         layers: Vec<FsLayer>,
-    ) -> String {
+    ) -> Result<String, Box<dyn std::error::Error>> {
         const PARALLEL_REQUESTS: usize = 16;
         let client = Client::new();
 
@@ -76,6 +78,8 @@ impl RegistryInterface for ImplRegistryInterface {
                     if metadata.len() != img.size.unwrap() as u64 {
                         exists = false;
                     }
+                } else {
+                    exists = false;
                 }
             }
 
@@ -137,11 +141,16 @@ impl RegistryInterface for ImplRegistryInterface {
                         Err(_) => {
                             let msg = format!("writing blob {}", url.clone());
                             log.error(&msg);
+                            //return Err(e);
                         }
                     },
-                    Err(_) => {
-                        let msg = format!("downloading blob {}", &url);
-                        log.error(&msg);
+                    Err(e) => {
+                        // TODO: update signature to Box<dyn MirrorError>
+                        // and return the error
+                        //let msg = format!("downloading blob {}", &url);
+                        //log.error(&msg);
+                        let err = MirrorError::new(&e.to_string());
+                        log.error(&err.to_string());
                     }
                 }
             }
@@ -149,7 +158,7 @@ impl RegistryInterface for ImplRegistryInterface {
         .buffer_unordered(PARALLEL_REQUESTS)
         .collect::<Vec<()>>();
         fetches.await;
-        String::from("ok")
+        Ok(String::from("ok"))
     }
     // push each image (blobs and manifest) referred to by the Manifest
     async fn push_image(
@@ -159,7 +168,7 @@ impl RegistryInterface for ImplRegistryInterface {
         url: String,
         token: String,
         manifest: Manifest,
-    ) -> String {
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let client = Client::new();
         let client = client.clone();
 
@@ -172,27 +181,23 @@ impl RegistryInterface for ImplRegistryInterface {
                 sub_component.clone(),
                 token.clone(),
             )
-            .await;
+            .await?;
             log.debug(&format!(
-                "processed blob sttaus {} : {:#?}",
+                "processed blob status {:#?} : {:#?}",
                 process_res, blob.digest
             ));
         }
 
         // mirror the config blob
         let blob = manifest.clone().config.unwrap();
-        let process_res = process_blob(
+        let _process_res = process_blob(
             log,
             &blob,
             url.clone(),
             sub_component.clone(),
             token.clone(),
         )
-        .await;
-
-        if process_res != String::from("ok") {
-            return String::from("ko process_blob for config layer failed");
-        }
+        .await?;
 
         // finally push the manifest
         let serialized_manifest = serde_json::to_string(&manifest.clone()).unwrap();
@@ -228,13 +233,12 @@ impl RegistryInterface for ImplRegistryInterface {
             put_url.clone() + &str_digest.clone()[0..7]
         ));
 
-        String::from("ok")
+        Ok(String::from("ok"))
     }
 }
 
 // Refer to https://distribution.github.io/distribution/spec/api/
 // for the full flow on image (container) push
-//
 // 1. First step is to post a blob
 //    POST /v2/<name>/blobs/uploads/
 //    If the POST request is successful, a 202 Accepted response will be returned
@@ -254,7 +258,7 @@ pub async fn process_blob(
     url: String,
     sub_component: String,
     token: String,
-) -> String {
+) -> Result<String, MirrorError> {
     let client = Client::new();
     let client = client.clone();
     let mut header_bearer: String = "Bearer ".to_owned();
@@ -275,7 +279,11 @@ pub async fn process_blob(
     let response = res.unwrap();
 
     if response.status() != StatusCode::ACCEPTED {
-        return String::from("initial post ko");
+        let err = MirrorError::new(&format!(
+            "initial post failed with status {:#?}",
+            response.status()
+        ));
+        return Err(err);
     }
 
     log.debug(&format!("headers {:#?}", response.headers()));
@@ -324,13 +332,12 @@ pub async fn process_blob(
         log.debug(&format!("result from put blob {:#?}", res_final.status()));
 
         if res_final.status() > StatusCode::CREATED {
-            return String::from(&format!(
-                "put blob failed ko with code {}",
-                res_final.status(),
-            ));
+            let err =
+                MirrorError::new(&format!("put blob failed with code {}", res_final.status()));
+            return Err(err);
         }
     }
-    String::from("ok")
+    Ok(String::from("ok"))
 }
 
 // construct the blobs url
@@ -442,6 +449,7 @@ pub fn get_destination_registry(url: String, component: String, mode: String) ->
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;

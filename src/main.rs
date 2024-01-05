@@ -10,6 +10,7 @@ mod auth;
 mod batch;
 mod config;
 mod diff;
+mod error;
 mod index;
 mod log;
 mod manifests;

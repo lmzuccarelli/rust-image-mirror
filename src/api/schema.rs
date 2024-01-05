@@ -545,7 +545,7 @@ pub trait RegistryInterface {
         url: String,
         token: String,
         layers: Vec<FsLayer>,
-    ) -> String;
+    ) -> Result<String, Box<dyn std::error::Error>>;
 
     // used to interact with container registry (push blobs)
     async fn push_image(
@@ -555,5 +555,5 @@ pub trait RegistryInterface {
         url: String,
         token: String,
         manifest: Manifest,
-    ) -> String;
+    ) -> Result<String, Box<dyn std::error::Error>>;
 }

@@ -5,24 +5,37 @@ use base64::{engine::general_purpose, Engine as _};
 use std::env;
 use std::fs::File;
 use std::io::Read;
+use std::process;
 use std::str;
 use urlencoding::encode;
 
 // read the credentials from set path (see podman credential reference)
-pub fn get_credentials() -> Result<String, Box<dyn std::error::Error>> {
+pub fn get_credentials(log: &Logging) -> Result<String, Box<dyn std::error::Error>> {
     // Create a path to the desired file
     // using $XDG_RUNTIME_DIR envar
     let u = match env::var_os("XDG_RUNTIME_DIR") {
         Some(v) => v.into_string().unwrap(),
-        None => panic!("$XDG_RUNTIME_DIR is not set"),
+        None => {
+            log.error("$XDG_RUNTIME_DIR/containers is not set");
+            "error".to_string()
+        }
     };
+
+    // this is overkill but it ensures we exit properly
+    if u.contains("error") {
+        process::exit(1);
+    }
+
     let binding = &(u.to_owned() + "/containers/auth.json");
     let path = Path::new(binding);
     let display = path.display();
 
     // Open the path in read-only mode, returns `io::Result<File>`
     let mut file = match File::open(&binding) {
-        Err(why) => panic!("couldn't open {}: {}", display, why),
+        Err(why) => {
+            log.error(&format!("couldn't open {}: {}", display, why));
+            process::exit(1);
+        }
         Ok(file) => file,
     };
 
@@ -97,7 +110,7 @@ pub async fn get_auth_json(
 // process all relative functions in this module to actaully get the token
 pub async fn get_token(log: &Logging, name: String) -> String {
     // get creds from $XDG_RUNTIME_DIR
-    let creds = get_credentials().unwrap();
+    let creds = get_credentials(log).unwrap();
     // parse the json data
     let rhauth = parse_json_creds(&log, creds, name.clone()).unwrap();
     // decode to base64
@@ -156,16 +169,19 @@ mod tests {
         let log = &Logging {
             log_level: Level::DEBUG,
         };
-        let data = get_credentials().unwrap();
+        let data = get_credentials(log).unwrap();
         let res = parse_json_creds(log, data, String::from(""));
         assert!(res.is_ok());
     }
 
     #[test]
     #[serial]
-    fn test_get_credentials_pass() {
+    fn tst_get_credentials_pass() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
         env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
-        let res = get_credentials();
+        let res = get_credentials(log);
         assert!(res.is_ok());
     }
 
@@ -173,8 +189,11 @@ mod tests {
     #[serial]
     #[should_panic]
     fn test_get_credentials_nofile_fail() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
         env::set_var("XDG_RUNTIME_DIR", "/run/");
-        let res = get_credentials();
+        let res = get_credentials(log);
         assert!(res.is_ok());
     }
 
@@ -182,8 +201,11 @@ mod tests {
     #[serial]
     #[should_panic]
     fn test_get_credentials_fail() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
         env::remove_var("XDG_RUNTIME_DIR");
-        let res = get_credentials();
+        let res = get_credentials(log);
         assert!(res.is_err());
     }
 }
