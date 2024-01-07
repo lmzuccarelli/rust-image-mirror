@@ -164,11 +164,12 @@ impl RegistryInterface for ImplRegistryInterface {
     async fn push_image(
         &self,
         log: &Logging,
+        dir: String,
         sub_component: String,
         url: String,
         token: String,
         manifest: Manifest,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, MirrorError> {
         let client = Client::new();
         let client = client.clone();
 
@@ -176,6 +177,7 @@ impl RegistryInterface for ImplRegistryInterface {
         for blob in manifest.clone().layers.unwrap().iter() {
             let process_res = process_blob(
                 log,
+                dir.clone(),
                 &blob,
                 url.clone(),
                 sub_component.clone(),
@@ -192,6 +194,7 @@ impl RegistryInterface for ImplRegistryInterface {
         let blob = manifest.clone().config.unwrap();
         let _process_res = process_blob(
             log,
+            dir.clone(),
             &blob,
             url.clone(),
             sub_component.clone(),
@@ -212,7 +215,6 @@ impl RegistryInterface for ImplRegistryInterface {
         hasher.update(serialized_manifest.clone());
         let hash_bytes = hasher.finalize();
         let str_digest = encode(hash_bytes);
-
         let res_put = client
             .put(put_url.clone() + &str_digest.clone()[0..7])
             .body(serialized_manifest.clone())
@@ -228,12 +230,20 @@ impl RegistryInterface for ImplRegistryInterface {
         log.info(&format!("processed image {}", str_digest));
         log.debug(&format!(
             "result for manifest {:#?} {} {}",
-            result.error_for_status(),
+            result.status(),
             sub_component,
             put_url.clone() + &str_digest.clone()[0..7]
         ));
 
-        Ok(String::from("ok"))
+        if result.status() != StatusCode::CREATED && result.status() != StatusCode::OK {
+            let err = MirrorError::new(&format!(
+                "upload manifest failed with status {:#?}",
+                result.status()
+            ));
+            Err(err)
+        } else {
+            Ok(String::from("ok"))
+        }
     }
 }
 
@@ -254,6 +264,7 @@ impl RegistryInterface for ImplRegistryInterface {
 //    PUT /v2/<name>/manifests/<reference>
 pub async fn process_blob(
     log: &Logging,
+    dir: String,
     blob: &Layer,
     url: String,
     sub_component: String,
@@ -264,6 +275,7 @@ pub async fn process_blob(
     let mut header_bearer: String = "Bearer ".to_owned();
     header_bearer.push_str(&token);
 
+    // TODO: add https functionality
     let post_url = get_destination_registry(
         url.clone(),
         sub_component.clone(),
@@ -288,7 +300,7 @@ pub async fn process_blob(
 
     log.debug(&format!("headers {:#?}", response.headers()));
     let location = response.headers().get("Location").unwrap();
-    let _uuid = response.headers().get("docker-upload-uuid").unwrap();
+    //let _uuid = response.headers().get("docker-upload-uuid").unwrap();
 
     let head_url = get_destination_registry(
         url.clone(),
@@ -297,8 +309,7 @@ pub async fn process_blob(
     );
 
     let digest_no_sha = blob.digest.split(":").nth(1).unwrap().to_string();
-    let path =
-        String::from("./working-dir/blobs-store/") + &digest_no_sha[0..2] + &"/" + &digest_no_sha;
+    let path = String::from(dir + "/blobs-store/") + &digest_no_sha[0..2] + &"/" + &digest_no_sha;
 
     let res_head = client
         .head(head_url.clone() + &blob.digest)
@@ -319,6 +330,7 @@ pub async fn process_blob(
             vec.clone().len(),
             &blob.digest
         ));
+
         let res_put = client
             .put(url)
             .body(vec.clone())
@@ -503,10 +515,10 @@ mod tests {
             log_level: Level::INFO,
         };
 
-        let real = ImplRegistryInterface {};
+        let fake = ImplRegistryInterface {};
 
         // test with url set first
-        aw!(real.get_blobs(
+        aw!(fake.get_blobs(
             log,
             String::from("test-artifacts/test-blobs-store/"),
             url.clone() + "/",
@@ -518,6 +530,90 @@ mod tests {
             .expect("should read file");
         assert_eq!(s, "{ \"test\": \"hello-world\" }");
         fs::remove_dir_all("test-artifacts/test-blobs-store").expect("should delete");
+    }
+
+    #[test]
+    fn push_image_pass() {
+        let mut server = mockito::Server::new();
+        let url = server.url();
+
+        // Create a mock
+        server
+            .mock("POST", "/v2/test/test-component/blobs/uploads/")
+            .with_status(202)
+            .with_header(
+                "Location",
+                &(url.clone() + "/v2/test/test-component/blobs/uploads?uuid=21321321323"),
+            )
+            .create();
+
+        server
+            .mock("HEAD", "/v2/test/test-component/blobs/sha256:1b594048db9380f9a8dd2e45e16a2e12d39df51f6f61d9be4c9a2986cbc2828b")
+            .with_status(404)
+            .create();
+
+        server
+            .mock("PUT", "/v2/test/test-component/blobs/uploads?uuid=21321321323&digest=sha256:1b594048db9380f9a8dd2e45e16a2e12d39df51f6f61d9be4c9a2986cbc2828b")
+            .with_status(201)
+            .create();
+
+        server
+            .mock("PUT", "/v2/test/test-component/manifests/def5ab3")
+            .with_status(200)
+            .create();
+
+        let fake = ImplRegistryInterface {};
+        let mp = ManifestPlatform {
+            architecture: "amd64".to_string(),
+            os: "linux".to_string(),
+        };
+        let layer = Layer {
+            digest: String::from(
+                "sha256:1b594048db9380f9a8dd2e45e16a2e12d39df51f6f61d9be4c9a2986cbc2828b",
+            ),
+            media_type: "vnd/object".to_string(),
+            size: 112 as i64,
+        };
+        let layers = vec![layer.clone()];
+        let manifest = Manifest {
+            schema_version: Some(123 as i64),
+            media_type: Some("vnd/test".to_string()),
+            platform: Some(mp),
+            digest: Some(String::from(
+                "sha256:1b594048db9380f9a8dd2e45e16a2e12d39df51f6f61d9be4c9a2986cbc2828b",
+            )),
+            size: Some(112 as i64),
+            config: Some(layer),
+            layers: Some(layers),
+        };
+
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+
+        // test with wrong url
+        let res = aw!(fake.push_image(
+            log,
+            String::from("./test-artifacts"),
+            String::from("test-component"),
+            String::from(url.clone().replace("http://", "docker://") + "/none"),
+            String::from("token"),
+            manifest.clone(),
+        ));
+
+        assert!(res.is_err());
+
+        // test with correct url
+        let res = aw!(fake.push_image(
+            log,
+            String::from("./test-artifacts"),
+            String::from("test-component"),
+            String::from(url.clone().replace("http://", "docker://") + "/test"),
+            String::from("token"),
+            manifest.clone(),
+        ));
+
+        assert!(res.is_ok());
     }
 
     #[test]
@@ -576,6 +672,71 @@ mod tests {
         assert_eq!(
             res,
             String::from("https://test.registry.io/v2/test/some-operator/blobs/")
+        );
+    }
+
+    #[test]
+    fn get_destination_registry_https_blobs_pass() {
+        let res = get_destination_registry(
+            "docker://127.0.0.1:5000/test".to_string(),
+            "test-component".to_string(),
+            "https_blobs_uploads".to_string(),
+        );
+        assert_eq!(
+            res,
+            String::from("https://127.0.0.1:5000/v2/test/test-component/blobs/uploads/")
+        );
+    }
+
+    #[test]
+    fn get_destination_registry_http_blobs_pass() {
+        let res = get_destination_registry(
+            "docker://127.0.0.1:5000/test".to_string(),
+            "test-component".to_string(),
+            "http_blobs_uploads".to_string(),
+        );
+        assert_eq!(
+            res,
+            String::from("http://127.0.0.1:5000/v2/test/test-component/blobs/uploads/")
+        );
+    }
+
+    #[test]
+    fn get_destination_registry_http_manifest_pass() {
+        let res = get_destination_registry(
+            "docker://127.0.0.1:5000/test".to_string(),
+            "test-component".to_string(),
+            "http_manifest".to_string(),
+        );
+        assert_eq!(
+            res,
+            String::from("http://127.0.0.1:5000/v2/test/test-component/manifests/")
+        );
+    }
+
+    #[test]
+    fn get_destination_registry_http_blob_digest_pass() {
+        let res = get_destination_registry(
+            "docker://127.0.0.1:5000/test".to_string(),
+            "test-component".to_string(),
+            "http_blobs_digest".to_string(),
+        );
+        assert_eq!(
+            res,
+            String::from("http://127.0.0.1:5000/v2/test/test-component/blobs/")
+        );
+    }
+
+    #[test]
+    fn get_destination_registry_http_none_pass() {
+        let res = get_destination_registry(
+            "docker://127.0.0.1:5000/test".to_string(),
+            "test-component".to_string(),
+            "http_none".to_string(),
+        );
+        assert_eq!(
+            res,
+            String::from("http://127.0.0.1:5000/v2/test/test-component/blobs/uploads/")
         );
     }
 }

@@ -1,11 +1,11 @@
 use crate::api::schema::*;
+use crate::error::handler::*;
 use crate::log::logging::*;
-use crate::Path;
+
 use base64::{engine::general_purpose, Engine as _};
 use std::env;
 use std::fs::File;
 use std::io::Read;
-use std::process;
 use std::str;
 use urlencoding::encode;
 
@@ -16,42 +16,31 @@ pub fn get_credentials(log: &Logging) -> Result<String, Box<dyn std::error::Erro
     let u = match env::var_os("XDG_RUNTIME_DIR") {
         Some(v) => v.into_string().unwrap(),
         None => {
-            log.error("$XDG_RUNTIME_DIR/containers is not set");
-            "error".to_string()
+            log.error("$XDG_RUNTIME_DIR/containers not set");
+            "".to_string()
         }
     };
-
     // this is overkill but it ensures we exit properly
-    if u.contains("error") {
-        process::exit(1);
+    if u.len() > 0 {
+        let binding = &(u.to_owned() + "/containers/auth.json");
+        // Open the path in read-only mode, returns `io::Result<File>`
+        let mut file = File::open(&binding)?;
+        // Read the file contents into a string, returns `io::Result<usize>`
+        let mut s = String::new();
+        file.read_to_string(&mut s)?;
+        Ok(s)
+    } else {
+        Err(Box::new(MirrorError::new("$XDG_RUNTIME_DIR not set")))
     }
-
-    let binding = &(u.to_owned() + "/containers/auth.json");
-    let path = Path::new(binding);
-    let display = path.display();
-
-    // Open the path in read-only mode, returns `io::Result<File>`
-    let mut file = match File::open(&binding) {
-        Err(why) => {
-            log.error(&format!("couldn't open {}: {}", display, why));
-            process::exit(1);
-        }
-        Ok(file) => file,
-    };
-
-    // Read the file contents into a string, returns `io::Result<usize>`
-    let mut s = String::new();
-    file.read_to_string(&mut s)?;
-    Ok(s)
 }
 
-// parse the json credentials to a struct
+/// parse the json credentials to a struct
 pub fn parse_json_creds(
     log: &Logging,
     data: String,
     mode: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::Root.
+    // parse the string of data into serde_json::Root.
     let creds: Root = serde_json::from_str(&data)?;
     if mode == "quay.io" {
         log.trace("using credentials for quay.io`");
@@ -61,9 +50,9 @@ pub fn parse_json_creds(
     Ok(creds.auths.registry_redhat_io.unwrap().auth)
 }
 
-// parse the json from the api call
+/// parse the json from the api call
 pub fn parse_json_token(data: String, mode: String) -> Result<String, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::Token.
+    // parse the string of data into serde_json::Token.
     let root: Token = serde_json::from_str(&data)?;
     if &mode == "quay.io" {
         return Ok(root.token.unwrap());
@@ -72,7 +61,7 @@ pub fn parse_json_token(data: String, mode: String) -> Result<String, Box<dyn st
     }
 }
 
-// update quay.io account and urlencode
+/// update quay.io account and urlencode
 fn update_url(mut url: String, account: String) -> String {
     let mut result = String::from("https://");
     let service = "quay%2Eio";
@@ -85,7 +74,7 @@ fn update_url(mut url: String, account: String) -> String {
     result
 }
 
-// async api call with basic auth
+/// async api call with basic auth
 pub async fn get_auth_json(
     url: String,
     user: String,
@@ -107,7 +96,7 @@ pub async fn get_auth_json(
     Ok(body)
 }
 
-// process all relative functions in this module to actaully get the token
+/// process all relative functions in this module to actaully get the token
 pub async fn get_token(log: &Logging, name: String) -> String {
     // get creds from $XDG_RUNTIME_DIR
     let creds = get_credentials(log).unwrap();
@@ -128,9 +117,15 @@ pub async fn get_token(log: &Logging, name: String) -> String {
         "quay.io" => {
             update_url("quay.io/v2/auth?".to_string(),user.to_string())
         },
-        &_ => "none".to_string(),
+        &_ => {
+            // used for testing
+            // calls the mockito server
+            let mut hld = name.split("/");
+            let url = hld.nth(0).unwrap();
+            String::from("http://".to_string() + url + "/auth")
+        },
     };
-    log.debug(&format!("url (redacted) {}", token_url.clone()));
+    log.info(&format!("url (redacted) {}", token_url.clone()));
     // call the realm url to get a token with the creds
     let res = get_auth_json(token_url, user.to_string(), pwd.to_string()).await;
     let result = res.unwrap();
@@ -150,10 +145,10 @@ mod tests {
             tokio_test::block_on($e)
         };
     }
-    // first get the token to obtain highest level of coverage
     #[test]
     #[serial]
-    fn test_get_token_pass() {
+    fn test_get_token_redhat_pass() {
+        env::remove_var("XDG_RUNTIME_DIR");
         env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
         let log = &Logging {
             log_level: Level::DEBUG,
@@ -161,10 +156,22 @@ mod tests {
         let res = aw!(get_token(log, String::from("registry.redhat.io"),));
         assert!(res.to_string() != String::from(""));
     }
+    #[test]
+    #[serial]
+    fn test_get_token_quay_pass() {
+        env::remove_var("XDG_RUNTIME_DIR");
+        env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+        let res = aw!(get_token(log, String::from("quay.io"),));
+        assert!(res.to_string() != String::from(""));
+    }
 
     #[test]
     #[serial]
     fn test_parse_json_creds_pass() {
+        env::remove_var("XDG_RUNTIME_DIR");
         env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
         let log = &Logging {
             log_level: Level::DEBUG,
@@ -173,38 +180,35 @@ mod tests {
         let res = parse_json_creds(log, data, String::from(""));
         assert!(res.is_ok());
     }
-
     #[test]
     #[serial]
     fn tst_get_credentials_pass() {
         let log = &Logging {
             log_level: Level::DEBUG,
         };
+        env::remove_var("XDG_RUNTIME_DIR");
         env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
         let res = get_credentials(log);
         assert!(res.is_ok());
     }
-
     #[test]
     #[serial]
-    #[should_panic]
-    fn test_get_credentials_nofile_fail() {
-        let log = &Logging {
-            log_level: Level::DEBUG,
-        };
-        env::set_var("XDG_RUNTIME_DIR", "/run/");
-        let res = get_credentials(log);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    #[serial]
-    #[should_panic]
-    fn test_get_credentials_fail() {
+    fn test_get_credentials_noenvar_fail() {
         let log = &Logging {
             log_level: Level::DEBUG,
         };
         env::remove_var("XDG_RUNTIME_DIR");
+        let res = get_credentials(log);
+        assert!(res.is_err());
+    }
+    #[test]
+    #[serial]
+    fn test_get_credentials_nofile_fail() {
+        let log = &Logging {
+            log_level: Level::DEBUG,
+        };
+        env::remove_var("XDG_RUNTIME_DIR");
+        env::set_var("XDG_RUNTIME_DIR", "/run/");
         let res = get_credentials(log);
         assert!(res.is_err());
     }

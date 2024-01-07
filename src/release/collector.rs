@@ -43,7 +43,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     let working_dir_cache =
         get_cache_dir(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
     let cache_exists = Path::new(&working_dir_cache).exists();
-    let sub_dir = dir.clone() + "/blobs-store/";
+    let sub_dir = dir.clone() + "blobs-store";
     let mut exists = true;
     if manifest_exists {
         let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
@@ -51,8 +51,9 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         if res_manifest_on_disk != res_manifest_in_mem || !cache_exists {
             exists = false;
         }
+    } else {
+        exists = false;
     }
-
     if !exists {
         log.info("detected change in index manifest");
         fs::write(manifest_json, manifest.clone())
@@ -81,7 +82,6 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 .create(&working_dir_cache)
                 .expect("unable to create directory");
         }
-
         untar_layers(
             log,
             sub_dir.clone(),
@@ -100,7 +100,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     )
     .await;
     log.mid(&format!(
-        "full path for directory 'configs' {} ",
+        "full path for directory 'release-manifests' {} ",
         &config_dir
     ));
 
@@ -119,8 +119,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         let release_op_dir = release_dir.clone() + "/release/" + &img.name;
         fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
         let manifest_url = get_manifest_url(img.from.name.clone());
-        log.trace(&format!("manifest url {:#?}", manifest_url));
-
+        log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
         // use the RegistryInterface to make the call
         let manifest = reg_con
             .get_manifest(manifest_url.clone(), token.clone())
@@ -167,7 +166,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         };
         fslayers.insert(0, cfg);
         let op_url = get_blobs_url_by_string(img.from.name.clone());
-        let blobs_dir = "./working-dir/blobs-store/".to_string();
+        let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
         log.trace(&format!("blobs_url {}", op_url));
         log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
 
@@ -194,18 +193,16 @@ pub async fn release_disk_to_mirror<T: RegistryInterface>(
     log.debug(&format!("release directory {}", release_dir.clone()));
     let manifests = get_all_assosciated_manifests(log, release_dir);
     // using map and collect are not async
-    // let mm = manifests[0].clone();
     for mm in manifests.iter() {
         // we can infer some info from the manifest
         let binding = mm.to_string();
-        //let rd = get_registry_details_from_manifest(binding.clone());
-        //log.trace(&format!("metadata for manifest {:#?}", rd));
         let manifest = get_release_manifest(binding.clone());
         log.trace(&format!("manifest struct {:#?}", manifest));
         log.trace(&format!("directory {}", binding));
         let _res = reg_con
             .push_image(
                 log,
+                dir.clone(), //String::from("./working-dir/"),
                 String::from("ocp-release"),
                 destination_url.clone(),
                 String::from(""),
@@ -259,6 +256,7 @@ fn get_all_assosciated_manifests(log: &Logging, dir: String) -> Vec<String> {
 mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
+    use crate::error::handler::MirrorError;
     use async_trait::async_trait;
 
     macro_rules! aw {
@@ -361,12 +359,12 @@ mod tests {
     #[test]
     fn mirror_to_disk_pass() {
         let log = &Logging {
-            log_level: Level::DEBUG,
+            log_level: Level::TRACE,
         };
 
         // we set up a mock server for the auth-credentials
         let mut server = mockito::Server::new();
-        let _url = server.url();
+        let url = server.url();
 
         // Create a mock
         server
@@ -393,10 +391,11 @@ mod tests {
 
         let pkgs = vec![pkg];
         let _op = Operator {
-            catalog: String::from("test.registry.io/test/test-index-operator:v1.0"),
+            catalog: String::from(url.replace("http://", "") + "/test/test-index-operator:v1.0"),
             packages: Some(pkgs),
         };
 
+        #[derive(Clone)]
         struct Fake {}
 
         #[async_trait]
@@ -407,47 +406,21 @@ mod tests {
                 _token: String,
             ) -> Result<String, Box<dyn std::error::Error>> {
                 let mut content = String::from("");
-
-                if url.contains("test-index-operator") {
-                    content =
-                        fs::read_to_string("test-artifacts/test-index-operator/v1.0/manifest.json")
-                            .expect("should read operator-index manifest file")
-                }
-                if url.contains("cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92")
-                {
-                    content =
-                        fs::read_to_string("test-artifacts/simulate-api-call/manifest-list.json")
-                            .expect("should read test (albo) controller manifest-list file");
-                }
-                if url.contains("75012e910726992f70c892b11e50e409852501c64903fa05fa68d89172546d5d")
-                    | url.contains(
-                        "5e03f571c5993f0853a910b7c0cab44ec0e451b94a9677ed82e921b54a4b735a",
-                    )
-                {
-                    content =
-                        fs::read_to_string("test-artifacts/simulate-api-call/manifest-amd64.json")
-                            .expect("should read test (albo) controller manifest-am64 file");
-                }
-                if url.contains("d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d")
-                {
-                    content = fs::read_to_string("test-artifacts/simulate-api-call/manifest.json")
-                        .expect("should read test (albo) bundle manifest file");
-                }
-                if url.contains("cbb31de2108b57172409cede667fa24d68d635ac3cc6db4af6e9b6f9dd1c5cd0")
-                {
+                // simulate api calls
+                if url.contains("test-release-operator") {
                     content = fs::read_to_string(
-                        "test-artifacts/simulate-api-call/manifest-amd64-operator.json",
+                        "./test-artifacts/simulate-api-call/manifest-release-index.json",
                     )
-                    .expect("should read test (albo) operator manifest file");
-                }
-                if url.contains("422e4fbe1ed81c79084f43a826dc0674510a7ff578e62b4ddda119ed3266d0b6")
-                {
-                    content = fs::read_to_string(
-                        "test-artifacts/simulate-api-call/manifest-amd64-kube.json",
-                    )
-                    .expect("should read test (openshift) kube-proxy manifest file");
+                    .expect("should read release-operator manifest file")
                 }
 
+                if url.contains("ade18f2994669ebeb870b3b545f8b48574da9fc26ea24341dd1c16faac9994a0")
+                {
+                    content = fs::read_to_string(
+                        "test-artifacts/simulate-api-call/manifest-release.json",
+                    )
+                    .expect("should read test-release-operator manifest file");
+                }
                 Ok(content)
             }
 
@@ -455,11 +428,20 @@ mod tests {
                 &self,
                 log: &Logging,
                 _dir: String,
-                _url: String,
+                url: String,
                 _token: String,
                 _layers: Vec<FsLayer>,
             ) -> Result<String, Box<dyn std::error::Error>> {
-                log.info("testing logging in fake test");
+                log.info("testing get blobs in fake test");
+                if url.contains("test-release-operator/blobs") {
+                    fs::create_dir_all("./test-artifacts/blobs-store/ac/")
+                        .expect("make dir test-artifacts/blob-store");
+                    fs::copy(
+                        "./test-artifacts/raw-tar-files/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e",
+                        "./test-artifacts/blobs-store/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e",
+                    )
+                    .expect("should copy blob file");
+                }
                 Ok(String::from("test"))
             }
 
@@ -467,10 +449,11 @@ mod tests {
                 &self,
                 log: &Logging,
                 _dir: String,
+                _subdir: String,
                 _url: String,
                 _token: String,
                 _manifest: Manifest,
-            ) -> Result<String, Box<dyn std::error::Error>> {
+            ) -> Result<String, MirrorError> {
                 log.info("testing logging in fake test");
                 Ok(String::from("test"))
             }
@@ -478,11 +461,38 @@ mod tests {
 
         let fake = Fake {};
 
+        // do a cleanup of test-artifacts
+
+        let exists = Path::new("./test-artifacts/blobs-store/ac").exists();
+        if exists {
+            fs::remove_dir_all("./test-artifacts/blobs-store/ac")
+                .expect("should delete test artifact blob-store");
+        }
+        let exists = Path::new("./test-artifacts/test-release-operator/v1.0/cache/ac202b").exists();
+        if exists {
+            fs::remove_dir_all("./test-artifacts/test-release-operator/v1.0/cache/ac202b")
+                .expect("should delete test artifact cache");
+        }
+        let exists =
+            Path::new("./test-artifacts/test-release-operator/v1.0/manifest.json").exists();
+        if exists {
+            fs::remove_file("./test-artifacts/test-release-operator/v1.0/manifest.json")
+                .expect("should delete test release operator manifest.json");
+        }
+
         aw!(release_mirror_to_disk(
-            fake,
+            fake.clone(),
             log,
-            String::from("test-artifacts/"),
-            String::from("test")
+            String::from("./test-artifacts/"),
+            String::from(url.replace("http://", "") + "/test/test-release-operator:v1.0")
+        ));
+
+        aw!(release_disk_to_mirror(
+            fake.clone(),
+            log,
+            String::from("./test-artifacts/"),
+            String::from(url.replace("http://", "") + "/test/"),
+            String::from("/test/test-release-operator:v1.0")
         ));
     }
 }

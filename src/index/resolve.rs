@@ -59,18 +59,20 @@ pub async fn untar_layers(
 
 // parse_release_image_index - best attempt to parse image index and return catalog reference
 pub fn parse_release_image_index(log: &Logging, release: String) -> ImageReference {
-    let i = &mut release.split(":");
-    let index = i.nth(0).unwrap();
-    let mut hld = index.split("/");
-    let ver = i.nth(0).unwrap();
+    let hld = &mut release.split("/");
+    let reg = hld.nth(0).unwrap();
+    let ns = hld.nth(0).unwrap();
+    let mut index = hld.nth(0).unwrap().split(":");
+    let name = index.nth(0).unwrap();
+    let ver = index.nth(0).unwrap();
     let ir = ImageReference {
-        registry: hld.nth(0).unwrap().to_string(),
-        namespace: hld.nth(0).unwrap().to_string(),
-        name: hld.nth(0).unwrap().to_string(),
+        registry: reg.to_string(),
+        namespace: ns.to_string(),
+        name: name.to_string(),
         version: ver.to_string(),
         packages: None,
     };
-    log.debug(&format!("image reference {:#?}", ir));
+    log.trace(&format!("image reference {:#?}", ir));
     ir
 }
 
@@ -80,18 +82,20 @@ pub fn parse_image_index(log: &Logging, operators: Vec<Operator>) -> Vec<ImageRe
     for ops in operators.iter() {
         let img = ops.catalog.clone();
         log.trace(&format!("catalogs {:#?}", ops.catalog));
-        let mut i = img.split(":");
-        let index = i.nth(0).unwrap();
-        let mut hld = index.split("/");
+        let mut hld = img.split("/");
+        let reg = hld.nth(0).unwrap();
+        let ns = hld.nth(0).unwrap();
+        let index = hld.nth(0).unwrap();
+        let mut i = index.split(":");
+        let name = i.nth(0).unwrap();
         let ver = i.nth(0).unwrap();
         let ir = ImageReference {
-            registry: hld.nth(0).unwrap().to_string(),
-            namespace: hld.nth(0).unwrap().to_string(),
-            name: hld.nth(0).unwrap().to_string(),
+            registry: reg.to_string(),
+            namespace: ns.to_string(),
+            name: name.to_string(),
             version: ver.to_string(),
             packages: ops.packages.clone(),
         };
-
         log.debug(&format!("image reference {:#?}", img));
         image_refs.insert(0, ir);
     }

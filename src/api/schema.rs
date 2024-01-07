@@ -5,6 +5,7 @@ use clap::Parser;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
+use crate::error::handler::*;
 use crate::log::logging::*;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -318,7 +319,7 @@ pub struct CatalogImage {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Helm {}
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Operator {
     #[serde(rename = "catalog")]
     pub catalog: String,
@@ -551,9 +552,10 @@ pub trait RegistryInterface {
     async fn push_image(
         &self,
         log: &Logging,
+        dir: String,
         sub_component: String,
         url: String,
         token: String,
         manifest: Manifest,
-    ) -> Result<String, Box<dyn std::error::Error>>;
+    ) -> Result<String, MirrorError>;
 }

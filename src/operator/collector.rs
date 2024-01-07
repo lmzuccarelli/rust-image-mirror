@@ -1,6 +1,7 @@
 use crate::api::schema::*;
 use crate::auth::credentials::*;
 use crate::batch::copy::*;
+use crate::error::handler::*;
 use crate::index::resolve::*;
 use crate::log::logging::*;
 use crate::manifests::catalogs::*;
@@ -300,6 +301,7 @@ pub async fn operator_disk_to_mirror<T: RegistryInterface>(
             let _res = reg_con
                 .push_image(
                     log,
+                    "./working-dir/".to_string(),
                     rd.sub_component,
                     destination_url.clone(),
                     String::from(""),
@@ -447,8 +449,12 @@ fn get_operator_manifest_json_dir(
 }
 
 fn get_registry_details(reg: &str) -> ImageReference {
-    let mut ver = reg.split(":");
-    let mut hld = ver.nth(0).unwrap().split("/");
+    let mut hld = reg.split("/");
+    let reg = hld.nth(0).unwrap();
+    let ns = hld.nth(0).unwrap();
+    let mut index = hld.nth(0).unwrap().split(":");
+    let name = index.nth(0).unwrap();
+    let ver = index.nth(0).unwrap();
     let pkg = Package {
         name: String::from(""),
         channels: None,
@@ -458,10 +464,10 @@ fn get_registry_details(reg: &str) -> ImageReference {
     };
     let vec_pkg = vec![pkg];
     let ir = ImageReference {
-        registry: hld.nth(0).unwrap().to_string(),
-        namespace: hld.nth(0).unwrap().to_string(),
-        name: hld.nth(0).unwrap().to_string(),
-        version: ver.nth(0).unwrap().to_string(),
+        registry: reg.to_string(),
+        namespace: ns.to_string(),
+        name: name.to_string(),
+        version: ver.to_string(),
         packages: Some(vec_pkg),
     };
     ir
@@ -658,7 +664,7 @@ mod tests {
 
         // we set up a mock server for the auth-credentials
         let mut server = mockito::Server::new();
-        let _url = server.url();
+        let url = server.url();
 
         // Create a mock
         server
@@ -685,10 +691,11 @@ mod tests {
 
         let pkgs = vec![pkg];
         let op = Operator {
-            catalog: String::from("test.registry.io/test/test-index-operator:v1.0"),
+            catalog: String::from(url.replace("http://", "") + "/test/test-index-operator:v1.0"),
             packages: Some(pkgs),
         };
 
+        #[derive(Clone)]
         struct Fake {}
 
         #[async_trait]
@@ -759,10 +766,11 @@ mod tests {
                 &self,
                 log: &Logging,
                 _dir: String,
+                _subdir: String,
                 _url: String,
                 _token: String,
                 _manifest: Manifest,
-            ) -> Result<String, Box<dyn std::error::Error>> {
+            ) -> Result<String, MirrorError> {
                 log.info("testing logging in fake test");
                 Ok(String::from("test"))
             }
@@ -770,11 +778,19 @@ mod tests {
 
         let fake = Fake {};
 
-        let ops = vec![op];
+        let ops = vec![op.clone()];
         aw!(operator_mirror_to_disk(
-            fake,
+            fake.clone(),
             log,
-            String::from("test-artifacts/"),
+            String::from("./test-artifacts/"),
+            ops.clone()
+        ));
+
+        aw!(operator_disk_to_mirror(
+            fake.clone(),
+            log,
+            String::from("./test-artifacts/"),
+            String::from("docker://127.0.0.1:123/test"),
             ops
         ));
     }
