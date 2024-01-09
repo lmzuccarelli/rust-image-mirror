@@ -162,3 +162,7 @@ $ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-
 
 ```
 
+### Coverage Overview
+
+![Cover](assets/coverage-overview.png)
+
