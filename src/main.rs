@@ -5,6 +5,7 @@ use std::path::Path;
 use tokio;
 
 // define local modules
+mod additional;
 mod api;
 mod auth;
 mod batch;
@@ -18,6 +19,7 @@ mod operator;
 mod release;
 
 // use local modules
+use additional::collector::*;
 use api::schema::*;
 use config::read::*;
 use diff::metadata_cache::*;
@@ -91,6 +93,7 @@ async fn main() {
         if isc_config.mirror.release.is_some()
             && res_skip != Skip::RELEASE
             && res_skip != Skip::RELOPS
+            && res_skip != Skip::ALL
         {
             release_mirror_to_disk(
                 reg_con.clone(),
@@ -104,6 +107,7 @@ async fn main() {
         if isc_config.mirror.operators.is_some()
             && res_skip != Skip::OPERATORS
             && res_skip != Skip::RELOPS
+            && res_skip != Skip::ALL
         {
             operator_mirror_to_disk(
                 reg_con.clone(),
@@ -113,8 +117,16 @@ async fn main() {
             )
             .await;
         }
-
-        // TODO: call additionalImages collector
+        // check for additional images
+        if isc_config.mirror.additional_images.is_some() && res_skip != Skip::ALL {
+            additional_mirror_to_disk(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                isc_config.mirror.additional_images.unwrap(),
+            )
+            .await;
+        }
 
         // if flag diff-tar is set create a diff tar.gz
         if args.diff_tar.unwrap() {
@@ -151,7 +163,7 @@ async fn main() {
     } else {
         // this is diskToMirror
         let destination = args.destination;
-        if res_skip != Skip::RELEASE && res_skip != Skip::RELOPS {
+        if res_skip != Skip::RELEASE && res_skip != Skip::ALL {
             release_disk_to_mirror(
                 reg_con.clone(),
                 log,
@@ -162,13 +174,24 @@ async fn main() {
             .await;
         }
 
-        if res_skip != Skip::OPERATORS && res_skip != Skip::RELOPS {
+        if res_skip != Skip::OPERATORS && res_skip != Skip::ALL {
             operator_disk_to_mirror(
                 reg_con.clone(),
                 log,
                 String::from("./working-dir/"),
                 destination.clone(),
                 isc_config.mirror.operators.unwrap(),
+            )
+            .await;
+        }
+
+        if res_skip != Skip::OPERATORS && res_skip != Skip::ALL {
+            additional_disk_to_mirror(
+                reg_con.clone(),
+                log,
+                String::from("./working-dir/"),
+                destination.clone(),
+                isc_config.mirror.additional_images.unwrap(),
             )
             .await;
         }
