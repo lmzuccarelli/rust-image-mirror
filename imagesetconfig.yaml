@@ -9,4 +9,5 @@ mirror:
       channels: 
       - name: stable-v1
       - name: alpha
-    - name: node-observability-operator
+  additionalImages:
+    - name: "registry.redhat.io/ubi8/ubi:latest" 

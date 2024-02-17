@@ -90,95 +90,96 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         )
         .await;
         log.hi("completed untar of layers");
-    }
+        // original !exists end }
 
-    // find the directory 'release-manifests'
-    let config_dir = find_dir(
-        log,
-        working_dir_cache.clone(),
-        "release-manifests".to_string(),
-    )
-    .await;
-    log.mid(&format!(
-        "full path for directory 'release-manifests' {} ",
-        &config_dir
-    ));
+        // find the directory 'release-manifests'
+        let config_dir = find_dir(
+            log,
+            working_dir_cache.clone(),
+            "release-manifests".to_string(),
+        )
+        .await;
+        log.mid(&format!(
+            "full path for directory 'release-manifests' {} ",
+            &config_dir
+        ));
 
-    // parse the image-references json from release-manfests directory
-    let imgs = get_release_json(config_dir + "/image-references");
-    log.trace(&format!(
-        "images from release-manifests/image-reference {:#?}",
-        imgs
-    ));
+        // parse the image-references json from release-manfests directory
+        let imgs = get_release_json(config_dir + "/image-references");
+        log.trace(&format!(
+            "images from release-manifests/image-reference {:#?}",
+            imgs
+        ));
 
-    // iterate through all the release image-references
-    let release_dir =
-        dir.clone() + "/" + &img_ref.clone().name + "/" + &img_ref.clone().version + "/";
-    for img in imgs.spec.tags.iter() {
-        // first check if the release operators exist on disk
-        let release_op_dir = release_dir.clone() + "/release/" + &img.name;
-        fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
-        let manifest_url = get_manifest_url(img.from.name.clone());
-        log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
-        // use the RegistryInterface to make the call
-        let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.clone())
-            .await
-            .unwrap();
+        // iterate through all the release image-references
+        let release_dir =
+            dir.clone() + "/" + &img_ref.clone().name + "/" + &img_ref.clone().version + "/";
+        for img in imgs.spec.tags.iter() {
+            // first check if the release operators exist on disk
+            let release_op_dir = release_dir.clone() + "/release/" + &img.name;
+            fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
+            let manifest_url = get_manifest_url(img.from.name.clone());
+            log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
+            // use the RegistryInterface to make the call
+            let manifest = reg_con
+                .get_manifest(manifest_url.clone(), token.clone())
+                .await
+                .unwrap();
 
-        log.info(&format!("checking manifest for {:#?}", img.name.clone()));
-        log.trace(&format!("manifest contents {:#?}", manifest));
-        let release_op = release_op_dir.clone() + "/manifest.json";
-        let metadata = fs::metadata(release_op);
-        // TODO: surely there is a better way ;)
-        if metadata.is_ok() {
-            let meta = metadata.as_ref().unwrap();
-            if meta.len() != manifest.len() as u64 {
+            log.info(&format!("checking manifest for {:#?}", img.name.clone()));
+            log.trace(&format!("manifest contents {:#?}", manifest));
+            let release_op = release_op_dir.clone() + "/manifest.json";
+            let metadata = fs::metadata(release_op);
+            // TODO: surely there is a better way ;)
+            if metadata.is_ok() {
+                let meta = metadata.as_ref().unwrap();
+                if meta.len() != manifest.len() as u64 {
+                    log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+                    fs::write(release_op_dir + "/manifest.json", manifest.clone())
+                        .expect("unable to write manifest.json file");
+                }
+            } else if metadata.is_err() {
                 log.info(&format!("writing manifest for {:#?}", img.name.clone()));
                 fs::write(release_op_dir + "/manifest.json", manifest.clone())
                     .expect("unable to write manifest.json file");
             }
-        } else if metadata.is_err() {
-            log.info(&format!("writing manifest for {:#?}", img.name.clone()));
-            fs::write(release_op_dir + "/manifest.json", manifest.clone())
-                .expect("unable to write manifest.json file");
-        }
-        let mut fslayers = Vec::new();
-        let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
-        let origin_tmp = img.from.name.split("@");
-        let origin = origin_tmp.clone().nth(0).unwrap();
+            let mut fslayers = Vec::new();
+            let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
+            let origin_tmp = img.from.name.split("@");
+            let origin = origin_tmp.clone().nth(0).unwrap();
 
-        // convert op_manifest.layer to FsLayer
-        for layer in op_manifest.layers.unwrap().iter() {
-            let fslayer = FsLayer {
-                blob_sum: layer.digest.clone(),
+            // convert op_manifest.layer to FsLayer
+            for layer in op_manifest.layers.unwrap().iter() {
+                let fslayer = FsLayer {
+                    blob_sum: layer.digest.clone(),
+                    original_ref: Some(origin.to_string()),
+                    size: Some(layer.size),
+                };
+                fslayers.insert(0, fslayer);
+            }
+            // add configs
+            let config = op_manifest.config.unwrap();
+            let cfg = FsLayer {
+                blob_sum: config.digest,
                 original_ref: Some(origin.to_string()),
-                size: Some(layer.size),
+                size: Some(config.size),
             };
-            fslayers.insert(0, fslayer);
-        }
-        // add configs
-        let config = op_manifest.config.unwrap();
-        let cfg = FsLayer {
-            blob_sum: config.digest,
-            original_ref: Some(origin.to_string()),
-            size: Some(config.size),
-        };
-        fslayers.insert(0, cfg);
-        let op_url = get_blobs_url_by_string(img.from.name.clone());
-        let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
-        log.trace(&format!("blobs_url {}", op_url));
-        log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
+            fslayers.insert(0, cfg);
+            let op_url = get_blobs_url_by_string(img.from.name.clone());
+            let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
+            log.trace(&format!("blobs_url {}", op_url));
+            log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
 
-        let _res = reg_con
-            .get_blobs(
-                log,
-                blobs_dir.clone(),
-                op_url,
-                token.clone(),
-                fslayers.clone(),
-            )
-            .await;
+            let _res = reg_con
+                .get_blobs(
+                    log,
+                    blobs_dir.clone(),
+                    op_url,
+                    token.clone(),
+                    fslayers.clone(),
+                )
+                .await;
+        }
     }
 }
 

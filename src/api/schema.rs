@@ -224,6 +224,7 @@ pub enum Skip {
     RELEASE,
     OPERATORS,
     ADDITIONAL,
+    ALL,
     RELOPS,
     NONE,
 }
@@ -253,12 +254,7 @@ pub struct Cli {
     pub loglevel: Option<String>,
 
     /// set the destination. Valid prefix are docker:// or file://
-    #[arg(
-        value_enum,
-        long,
-        value_name = "destination",
-        default_value = "file://temp"
-    )]
+    #[arg(value_enum, long, value_name = "destination", default_value = "")]
     pub destination: String,
 
     /// set the skip flag. Valid arguments are none, release, operators, additional,

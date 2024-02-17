@@ -125,7 +125,7 @@ pub async fn get_token(log: &Logging, name: String) -> String {
             String::from("http://".to_string() + url + "/auth")
         },
     };
-    log.info(&format!("url (redacted) {}", token_url.clone()));
+    log.debug(&format!("url (redacted) {}", token_url.clone()));
     // call the realm url to get a token with the creds
     let res = get_auth_json(token_url, user.to_string(), pwd.to_string()).await;
     let result = res.unwrap();
