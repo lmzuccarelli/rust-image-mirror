@@ -1,7 +1,4 @@
-use crate::log::logging::*;
-use crate::manifests::catalogs::parse_json_manifest_operator;
 use chrono::NaiveDateTime;
-// use exitcode;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::HashSet;
@@ -11,6 +8,9 @@ use std::path::Path;
 use std::time::SystemTime;
 use tempdir::TempDir;
 use walkdir::WalkDir;
+
+use custom_logger::*;
+use mirror_catalog_index::*;
 
 pub fn get_metadata_dirs_by_date(log: &Logging, dir: String, date: String) -> HashSet<String> {
     let mut valid_dirs = HashSet::new();
@@ -26,7 +26,7 @@ pub fn get_metadata_dirs_by_date(log: &Logging, dir: String, date: String) -> Ha
         }
     };
 
-    let date_unix = NaiveDateTime::timestamp(&date_only.unwrap());
+    let date_unix = NaiveDateTime::and_utc(&date_only.unwrap());
     log.info(&format!("date unix {:#?}", date_unix));
     for e in WalkDir::new(dir.clone().to_string())
         .into_iter()
@@ -43,7 +43,7 @@ pub fn get_metadata_dirs_by_date(log: &Logging, dir: String, date: String) -> Ha
             if (dir.contains("operators") || dir.contains("release"))
                 && (Path::new(&(dir.clone() + &"/manifest.json".to_string())).exists()
                     || Path::new(&(dir.clone() + &"/manifest-list.json".to_string())).exists())
-                && created.as_secs() > date_unix as u64
+                && created.as_secs() > date_unix.timestamp() as u64
             {
                 log.hi(&format!(
                     "timestamp {:#?} for dir {:#?} ",
@@ -77,13 +77,12 @@ pub fn get_metadata_dirs_incremental(log: &Logging, dir: String) -> HashSet<Stri
 pub fn create_diff_tar(
     log: &Logging,
     tar_file: String,
-    base_dir: String,
+    _base_dir: String,
     dirs: Vec<&std::string::String>,
     config: String,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let tmp_dir = TempDir::new("tmp-diff-tar")?;
     // working-dir/blobs-store
-    let from_base = base_dir.clone();
     fs::create_dir_all(tmp_dir.path().join("metadata"))?;
     fs::create_dir_all(tmp_dir.path().join("blobs"))?;
     for x in dirs {
@@ -102,8 +101,9 @@ pub fn create_diff_tar(
             let s = fs::read_to_string(from.clone())?;
             if !from.contains("list") & !from.contains("catalog") {
                 log.trace(&format!("from {}", from));
-                let mnfst = parse_json_manifest_operator(s.clone()).unwrap();
-                for layer in mnfst.layers.unwrap().iter() {
+                let _mnfst = parse_json_manifest(s.clone()).unwrap();
+                /*
+                for layer in mnfst.iter() {
                     let digest = layer.digest.split(":").nth(1).unwrap();
                     log.hi(&format!("layer to copy {:#?}", digest));
                     let to_dir = String::from("blobs/") + digest;
@@ -127,6 +127,7 @@ pub fn create_diff_tar(
                     fs::copy(from, to).unwrap();
                     log.trace("config copied to tmp dir");
                 }
+                */
             }
         }
     }
@@ -145,6 +146,14 @@ pub fn create_diff_tar(
     tmp_dir.close().unwrap();
     Ok(true)
 }
+
+/*
+pub fn parse_json_manifest_operator(data: String) -> Result<Manifest, Box<dyn std::error::Error>> {
+    // Parse the string of data into serde_json::Manifest.
+    let root: Manifest = serde_json::from_str(&data)?;
+    Ok(root)
+}
+*/
 
 #[cfg(test)]
 mod tests {

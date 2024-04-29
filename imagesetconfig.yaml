@@ -1,12 +1,12 @@
 kind: ImageSetConfiguration
-apiVersion: alpha1
+apiVersion: mirror.openshift/v3alpha1
 mirror:
-  release: "quay.io/openshift-release-dev/ocp-release:4.14.6-x86_64"
+  release: 
+  - version: "4.14.16"
+    image: "quay.io/openshift-release-dev/ocp-release:4.14.6-x86_64"
   operators:
   - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.14"
     packages:
     - name: aws-load-balancer-operator
-      channels: 
-      - name: stable-v1
-      - name: alpha
-    - name: node-observability-operator
+      bundles: 
+      - name: "aws-load-balancer-operator.v1.1.0"

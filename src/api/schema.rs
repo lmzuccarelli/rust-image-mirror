@@ -1,13 +1,47 @@
 // module schema
 
-use async_trait::async_trait;
 use clap::Parser;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
 
-use crate::error::handler::*;
-use crate::log::logging::*;
+/// rust-container-tool cli struct
+#[derive(Parser, Debug)]
+#[command(name = "rust-image-mirror")]
+#[command(author = "Luigi Mario Zuccarelli <luzuccar@redhat.com>")]
+#[command(version = "0.2.0")]
+#[command(about = "Used to mirror redhat specific release, operator and additional images", long_about = None)]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
+    /// config file to use
+    #[arg(short, long, value_name = "config", default_value = "")]
+    pub config: Option<String>,
 
+    /// if set to true will create a diff tar file
+    #[arg(short, long, value_name = "diff-tar", default_value = "false")]
+    pub diff_tar: Option<bool>,
+
+    /// used only in conjuction with --diff-tar with format yyyy/mm/dd (will be ignored otherwise)
+    #[arg(long, value_name = "date", default_value = "")]
+    pub date: Option<String>,
+
+    /// set the loglevel. Valid arguments are info, debug, trace
+    #[arg(value_enum, long, value_name = "loglevel", default_value = "info")]
+    pub loglevel: Option<String>,
+
+    /// set the destination. Valid prefix are docker:// or file://
+    #[arg(
+        value_enum,
+        long,
+        value_name = "destination",
+        default_value = "file://temp"
+    )]
+    pub destination: String,
+
+    /// set the skip flag. Valid arguments are none, release, operators, additional,
+    /// release-operators
+    #[arg(value_enum, long, value_name = "skip", default_value = "none")]
+    pub skip: Option<String>,
+}
+
+/*
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ReleaseSchema {
     #[serde(rename = "spec")]
@@ -228,84 +262,6 @@ pub enum Skip {
     NONE,
 }
 
-/// rust-container-tool cli struct
-#[derive(Parser, Debug)]
-#[command(name = "rust-image-mirror")]
-#[command(author = "Luigi Mario Zuccarelli <luzuccar@redhat.com>")]
-#[command(version = "0.0.1")]
-#[command(about = "Used to mirror redhat specific release, operator and additional images", long_about = None)]
-#[command(author, version, about, long_about = None)]
-pub struct Cli {
-    /// config file to use
-    #[arg(short, long, value_name = "config", default_value = "")]
-    pub config: Option<String>,
-
-    /// if set to true will create a diff tar file
-    #[arg(short, long, value_name = "diff-tar", default_value = "false")]
-    pub diff_tar: Option<bool>,
-
-    /// used only in conjuction with --diff-tar with format yyyy/mm/dd (will be ignored otherwise)
-    #[arg(long, value_name = "date", default_value = "")]
-    pub date: Option<String>,
-
-    /// set the loglevel. Valid arguments are info, debug, trace
-    #[arg(value_enum, long, value_name = "loglevel", default_value = "info")]
-    pub loglevel: Option<String>,
-
-    /// set the destination. Valid prefix are docker:// or file://
-    #[arg(
-        value_enum,
-        long,
-        value_name = "destination",
-        default_value = "file://temp"
-    )]
-    pub destination: String,
-
-    /// set the skip flag. Valid arguments are none, release, operators, additional,
-    /// release-operators
-    #[arg(value_enum, long, value_name = "skip", default_value = "none")]
-    pub skip: Option<String>,
-}
-
-/// config schema
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ImageSetConfig {
-    #[serde(rename = "kind")]
-    pub kind: String,
-
-    #[serde(rename = "apiVersion")]
-    pub api_version: String,
-
-    #[serde(rename = "storageConfig")]
-    pub storage_config: Option<StorageConfig>,
-
-    #[serde(rename = "mirror")]
-    pub mirror: Mirror,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Mirror {
-    #[serde(rename = "platform")]
-    pub platform: Option<Platform>,
-
-    #[serde(rename = "release")]
-    pub release: Option<String>,
-
-    #[serde(rename = "operators")]
-    pub operators: Option<Vec<Operator>>,
-
-    #[serde(rename = "additionalImages")]
-    pub additional_images: Option<Vec<Image>>,
-
-    #[serde(rename = "helm")]
-    pub helm: Option<Helm>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Image {
-    #[serde(rename = "name")]
-    pub name: String,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CatalogImage {
@@ -316,68 +272,7 @@ pub struct CatalogImage {
     pub channel: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Helm {}
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Operator {
-    #[serde(rename = "catalog")]
-    pub catalog: String,
-
-    #[serde(rename = "packages")]
-    pub packages: Option<Vec<Package>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Package {
-    #[serde(rename = "name")]
-    pub name: String,
-
-    #[serde(rename = "channels")]
-    pub channels: Option<Vec<IncludeChannel>>,
-
-    #[serde(rename = "minVersion")]
-    pub min_version: Option<String>,
-
-    #[serde(rename = "maxVersion")]
-    pub max_version: Option<String>,
-
-    #[serde(rename = "minBundle")]
-    pub min_bundle: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct IncludeChannel {
-    #[serde(rename = "name")]
-    pub name: String,
-
-    #[serde(rename = "minVersion")]
-    pub min_version: Option<String>,
-
-    #[serde(rename = "maxVersion")]
-    pub max_version: Option<String>,
-
-    #[serde(rename = "minBundle")]
-    pub min_bundle: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Platform {
-    #[serde(rename = "channels")]
-    channels: Vec<Channel>,
-
-    #[serde(rename = "graph")]
-    graph: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Channel {
-    #[serde(rename = "name")]
-    name: String,
-
-    #[serde(rename = "type")]
-    channel_type: String,
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct StorageConfig {
@@ -559,3 +454,4 @@ pub trait RegistryInterface {
         manifest: Manifest,
     ) -> Result<String, MirrorError>;
 }
+*/

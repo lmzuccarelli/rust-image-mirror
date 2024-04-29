@@ -1,29 +1,24 @@
 // use modules
+use crate::operator::collector::*;
+use crate::release::collector::*;
 use clap::Parser;
+use custom_logger::*;
+use mirror_copy::ImplRegistryInterface;
 use std::collections::HashSet;
-use std::path::Path;
 use tokio;
 
 // define local modules
 mod api;
-mod auth;
-mod batch;
 mod config;
 mod diff;
 mod error;
-mod index;
-mod log;
-mod manifests;
 mod operator;
 mod release;
 
 // use local modules
 use api::schema::*;
-use config::read::*;
+use config::load::*;
 use diff::metadata_cache::*;
-use log::logging::*;
-use operator::collector::*;
-use release::collector::*;
 
 // main entry point (use async)
 #[tokio::main]
@@ -31,7 +26,7 @@ async fn main() {
     let args = Cli::parse();
     let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
-    let skip = args.skip.unwrap().to_string();
+    //let skip = args.skip.unwrap().to_string();
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -39,15 +34,6 @@ async fn main() {
         "debug" => Level::DEBUG,
         "trace" => Level::TRACE,
         _ => Level::INFO,
-    };
-
-    // convert to enum
-    let res_skip = match skip.as_str() {
-        "release" => Skip::RELEASE,
-        "operators" => Skip::OPERATORS,
-        "additional" => Skip::ADDITIONAL,
-        "release-operators" => Skip::RELOPS,
-        _ => Skip::NONE,
     };
 
     // setup logging
@@ -62,22 +48,25 @@ async fn main() {
     }
 
     log.info(&format!("rust-image-mirror {} ", cfg));
-    if res_skip != Skip::NONE {
-        log.hi(&format!("skipping {}", skip));
-    }
-    let mut current_cache = HashSet::new();
+    let mut current_cache: HashSet<String> = HashSet::new();
 
     if args.diff_tar.unwrap() {
         if args.date.clone().unwrap().len() == 0 {
             current_cache = get_metadata_dirs_incremental(log, String::from("working-dir/"));
-            log.debug(&format!("current cache {:#?} ", current_cache));
+            log.debug(&format!("current cache {:#?} ", current_cache.clone()));
         }
     }
 
     // Parse the config serde_yaml::ImageSetConfiguration.
     let config = load_config(cfg).unwrap();
     let isc_config = parse_yaml_config(config.clone()).unwrap();
-    log.debug(&format!(
+
+    log.info(&format!(
+        "image set config releases {:#?}",
+        isc_config.mirror.release
+    ));
+
+    log.info(&format!(
         "image set config operators {:#?}",
         isc_config.mirror.operators
     ));
@@ -85,13 +74,24 @@ async fn main() {
     // initialize the client request interface
     let reg_con = ImplRegistryInterface {};
 
+    // check for release image
+    if isc_config.mirror.operators.is_some() {
+        operator_mirror_to_disk(
+            reg_con.clone(),
+            log,
+            String::from("./working-dir/"),
+            isc_config.mirror.operators.clone().unwrap(),
+        )
+        .await;
+    }
+
+    // initialize the client request interface
+    let reg_con = ImplRegistryInterface {};
+
     // this is mirrorToDisk
     if args.destination.contains("file://") {
         // check for release image
-        if isc_config.mirror.release.is_some()
-            && res_skip != Skip::RELEASE
-            && res_skip != Skip::RELOPS
-        {
+        if isc_config.mirror.release.is_some() {
             release_mirror_to_disk(
                 reg_con.clone(),
                 log,
@@ -101,10 +101,7 @@ async fn main() {
             .await;
         }
         // check for operators
-        if isc_config.mirror.operators.is_some()
-            && res_skip != Skip::OPERATORS
-            && res_skip != Skip::RELOPS
-        {
+        if isc_config.mirror.operators.is_some() {
             operator_mirror_to_disk(
                 reg_con.clone(),
                 log,
@@ -151,26 +148,23 @@ async fn main() {
     } else {
         // this is diskToMirror
         let destination = args.destination;
-        if res_skip != Skip::RELEASE && res_skip != Skip::RELOPS {
-            release_disk_to_mirror(
-                reg_con.clone(),
-                log,
-                String::from("./working-dir/"),
-                destination.clone(),
-                isc_config.mirror.release.unwrap(),
-            )
-            .await;
-        }
 
-        if res_skip != Skip::OPERATORS && res_skip != Skip::RELOPS {
-            operator_disk_to_mirror(
-                reg_con.clone(),
-                log,
-                String::from("./working-dir/"),
-                destination.clone(),
-                isc_config.mirror.operators.unwrap(),
-            )
-            .await;
-        }
+        release_disk_to_mirror(
+            reg_con.clone(),
+            log,
+            String::from("./working-dir/"),
+            destination.clone(),
+            isc_config.mirror.release.unwrap(),
+        )
+        .await;
+
+        operator_disk_to_mirror(
+            reg_con.clone(),
+            log,
+            String::from("./working-dir/"),
+            destination.clone(),
+            isc_config.mirror.operators.unwrap(),
+        )
+        .await;
     }
 }

@@ -7,10 +7,10 @@ TEST ?= ""
 DIFF ?= false
 DOCKER_DESTINATION ?= "docker://127.0.0.1:5000/test"
 
-build: 
+build-debug: 
 	cargo build
 
-build-release:
+build:
 	cargo build --release
 
 test: clean
@@ -29,5 +29,9 @@ run-d2m:
 run-m2d:
 	cargo run -- --config imagesetconfig.yaml --diff-tar $(DIFF)  --loglevel $(LEVEL) --destination file://
 
-clean:
+clean-all:
+	rm -rf cargo-test*
+	cargo clean
+
+clean-tests:
 	rm -rf cargo-test*

@@ -1,7 +1,71 @@
-use crate::api::schema::*;
-use crate::Path;
+use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
+
+/// config schema
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ImageSetConfig {
+    #[serde(rename = "kind")]
+    pub kind: String,
+
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+
+    #[serde(rename = "mirror")]
+    pub mirror: Mirror,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Mirror {
+    #[serde(rename = "release")]
+    pub release: Option<Vec<Release>>,
+
+    #[serde(rename = "operators")]
+    pub operators: Option<Vec<Operator>>,
+
+    #[serde(rename = "additionalImages")]
+    pub additional_images: Option<Vec<Image>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Image {
+    #[serde(rename = "name")]
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Operator {
+    #[serde(rename = "catalog")]
+    pub catalog: String,
+
+    #[serde(rename = "packages")]
+    pub packages: Option<Vec<Package>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Package {
+    #[serde(rename = "name")]
+    pub name: String,
+
+    #[serde(rename = "bundles")]
+    pub bundles: Vec<Bundle>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Bundle {
+    #[serde(rename = "name")]
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Release {
+    #[serde(rename = "version")]
+    pub version: String,
+
+    #[serde(rename = "image")]
+    pub image: String,
+}
 
 // read the 'image set config' file
 pub fn load_config(dir: String) -> Result<String, Box<dyn std::error::Error>> {

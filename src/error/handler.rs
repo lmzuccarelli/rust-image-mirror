@@ -6,6 +6,7 @@ pub struct MirrorError {
     details: String,
 }
 
+#[allow(dead_code)]
 impl MirrorError {
     pub fn new(msg: &str) -> MirrorError {
         MirrorError {
