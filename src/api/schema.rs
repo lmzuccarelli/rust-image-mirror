@@ -39,6 +39,16 @@ pub struct Cli {
     /// release-operators
     #[arg(value_enum, long, value_name = "skip", default_value = "none")]
     pub skip: Option<String>,
+
+    /// set the skip-manifest-check flag. Valid arguments are none, release, operators, additional,
+    /// release-operators
+    #[arg(
+        value_enum,
+        long,
+        value_name = "skip-manifest-check",
+        default_value = "none"
+    )]
+    pub skip_manifest_check: Option<String>,
 }
 
 /*

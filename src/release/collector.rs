@@ -1,8 +1,11 @@
 use custom_logger::*;
+use futures::stream::FuturesUnordered;
+use futures::stream::StreamExt;
 use mirror_auth::*;
 use mirror_catalog_index::*;
 use mirror_copy::*;
 use serde_derive::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
@@ -66,6 +69,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
+    skip_manifests: bool,
     releases: Vec<Release>,
 ) {
     log.hi("release collector mode: mirrorToDisk");
@@ -168,48 +172,64 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         // iterate through all the release image-references
         let release_dir =
             dir.clone() + "/" + &img_ref.clone().name + "/" + &img_ref.clone().version + "/";
+        let mut vec_flayer: Vec<FsLayer> = Vec::new();
+        let mut vec_common_blobs: Vec<String> = Vec::new();
+        let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
+        let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
+        let mut manifest: String;
+
         for img in imgs.unwrap().spec.tags.iter() {
             // first check if the release operators exist on disk
             let release_op_dir = release_dir.clone() + "/release/" + &img.name;
-            fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
-            let manifest_url = get_manifest_url(img.from.name.clone());
-            log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
-            // use the RegistryInterface to make the call
-            let manifest = reg_con
-                .get_manifest(manifest_url.clone(), token.clone())
-                .await
-                .unwrap();
-
-            log.info(&format!("checking manifest for {:#?}", img.name.clone()));
-            log.trace(&format!("manifest contents {:#?}", manifest));
             let release_op = release_op_dir.clone() + "/manifest.json";
-            let metadata = fs::metadata(release_op);
-            // TODO: surely there is a better way ;)
-            if metadata.is_ok() {
-                let meta = metadata.as_ref().unwrap();
-                if meta.len() != manifest.len() as u64 {
-                    log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+            fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
+            if !skip_manifests {
+                let manifest_url = get_manifest_url(img.from.name.clone());
+                log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
+                // use the RegistryInterface to make the call
+                manifest = reg_con
+                    .get_manifest(manifest_url.clone(), token.clone())
+                    .await
+                    .unwrap();
+
+                log.info(&format!("checking manifest {:#?}", img.name.clone()));
+                log.trace(&format!("manifest contents {:#?}", manifest));
+                let metadata = fs::metadata(release_op);
+
+                if metadata.is_ok() {
+                    let meta = metadata.as_ref().unwrap();
+                    if meta.len() != manifest.len() as u64 {
+                        log.info(&format!("writing manifest for {:#?}", img.name.clone()));
+                        fs::write(release_op_dir + "/manifest.json", manifest.clone())
+                            .expect("unable to write manifest.json file");
+                    }
+                } else if metadata.is_err() {
+                    log.info(&format!("writing  manifest {:#?}", img.name.clone()));
                     fs::write(release_op_dir + "/manifest.json", manifest.clone())
                         .expect("unable to write manifest.json file");
                 }
-            } else if metadata.is_err() {
-                log.info(&format!("writing manifest for {:#?}", img.name.clone()));
-                fs::write(release_op_dir + "/manifest.json", manifest.clone())
-                    .expect("unable to write manifest.json file");
+            } else {
+                manifest = fs::read_to_string(release_op.clone()).expect("should read manifest");
             }
-            let mut fslayers = Vec::new();
+
             let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
             let origin_tmp = img.from.name.split("@");
             let origin = origin_tmp.clone().nth(0).unwrap();
+            let op_url = get_blobs_url_by_string(img.from.name.clone());
 
-            // convert op_manifest.layer to FsLayer
             for layer in op_manifest.layers.unwrap().iter() {
+                // check for duplicates
+                if vec_common_blobs.contains(&layer.digest) {
+                    continue;
+                }
+                vec_common_blobs.push(layer.digest.clone());
+                // convert op_manifest.layer to FsLayer
                 let fslayer = FsLayer {
                     blob_sum: layer.digest.clone(),
                     original_ref: Some(origin.to_string()),
                     size: Some(layer.size),
                 };
-                fslayers.insert(0, fslayer);
+                vec_flayer.insert(0, fslayer);
             }
             // add configs
             let config = op_manifest.config.unwrap();
@@ -218,21 +238,38 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 original_ref: Some(origin.to_string()),
                 size: Some(config.size),
             };
-            fslayers.insert(0, cfg);
-            let op_url = get_blobs_url_by_string(img.from.name.clone());
-            let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
+            vec_flayer.insert(0, cfg);
+            // finally add the fslayers to the hashmap
+            fslayers.insert(op_url.clone(), vec_flayer.clone());
             log.trace(&format!("blobs_url {}", op_url));
             log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
+        }
 
-            let _res = reg_con
-                .get_blobs(
-                    log,
-                    blobs_dir.clone(),
-                    op_url,
-                    token.clone(),
-                    fslayers.clone(),
-                )
-                .await;
+        // get blobs in batch of 8
+        // each future handles get_blobs api call
+        // with 8 threads (one per digest)
+        let mut futs = FuturesUnordered::new();
+        let batch_size = 8;
+        for (k, v) in fslayers.iter() {
+            // batch the calls
+            futs.push(reg_con.get_blobs(
+                log,
+                blobs_dir.clone(),
+                k.to_string(),
+                token.clone(),
+                v.clone(),
+            ));
+            if futs.len() >= batch_size {
+                let response = futs.next().await.unwrap();
+                log.info(&format!(
+                    "completed batch of {} {:#?}",
+                    batch_size, response
+                ));
+            }
+        }
+        // Wait for the remaining to finish.
+        while let Some(response) = futs.next().await {
+            log.info(&format!("completed rest of batch {:#?}", response));
         }
     }
 }
@@ -402,7 +439,7 @@ mod tests {
             )
             .create();
 
-        #[derive(Clone)]
-        struct Fake {}
+        //#[derive(Clone)]
+        //struct Fake {}
     }
 }

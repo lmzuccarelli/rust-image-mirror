@@ -26,7 +26,7 @@ async fn main() {
     let args = Cli::parse();
     let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
-    //let skip = args.skip.unwrap().to_string();
+    let skip_manifests = args.skip_manifest_check.unwrap().to_string();
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -91,11 +91,13 @@ async fn main() {
     // this is mirrorToDisk
     if args.destination.contains("file://") {
         // check for release image
+        let skip_manifest_check = skip_manifests == "release";
         if isc_config.mirror.release.is_some() {
             release_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 String::from("./working-dir/"),
+                skip_manifest_check,
                 isc_config.mirror.release.unwrap(),
             )
             .await;
