@@ -41,6 +41,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
+    skip_gen: bool,
     operators: Vec<Operator>,
 ) {
     log.hi("operator collector mode: mirrorToDisk");
@@ -118,14 +119,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
         // find the directory 'configs'
         let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
-        log.mid(&format!(
+        log.info(&format!(
             "full path for directory 'configs' {} ",
             &config_dir
         ));
 
-        // build and streamline all declarative configs
-        DeclarativeConfig::build_updated_configs(log, config_dir.clone() + &"/")
-            .expect("should build updated configs");
+        if !skip_gen {
+            // build and streamline all declarative configs
+            DeclarativeConfig::build_updated_configs(log, config_dir.clone() + &"/")
+                .expect("should build updated configs");
+        }
 
         let mut blob_tracker: Vec<String> = vec![];
 
@@ -147,7 +150,10 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     for ri in related_images.iter() {
                         let ir = parse_url(log, ri.image.clone());
                         let url = get_image_manifest_url(ir.clone());
-                        log.info(&format!("mirroring image {:#?}", ri.image.clone()));
+                        log.info(&format!(
+                            "  checking manifest {:#?}",
+                            ir.namespace.clone() + "/" + &ir.name
+                        ));
                         let manifest = reg_con
                             .get_manifest(url.clone(), token.clone())
                             .await

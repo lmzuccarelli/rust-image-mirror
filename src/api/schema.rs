@@ -49,6 +49,16 @@ pub struct Cli {
         default_value = "none"
     )]
     pub skip_manifest_check: Option<String>,
+
+    /// set the skip-gen-declconfig flag.
+    /// release-operators
+    #[arg(
+        short,
+        long,
+        value_name = "skip-gen-declconfig",
+        default_value = "false"
+    )]
+    pub skip_gen_declconfig: bool,
 }
 
 /*

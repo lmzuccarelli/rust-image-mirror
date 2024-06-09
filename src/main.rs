@@ -27,6 +27,7 @@ async fn main() {
     let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
     let skip_manifests = args.skip_manifest_check.unwrap().to_string();
+    let skip_gen = args.skip_gen_declconfig;
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -61,12 +62,12 @@ async fn main() {
     let config = load_config(cfg).unwrap();
     let isc_config = parse_yaml_config(config.clone()).unwrap();
 
-    log.info(&format!(
+    log.debug(&format!(
         "image set config releases {:#?}",
         isc_config.mirror.release
     ));
 
-    log.info(&format!(
+    log.debug(&format!(
         "image set config operators {:#?}",
         isc_config.mirror.operators
     ));
@@ -94,6 +95,7 @@ async fn main() {
                 reg_con.clone(),
                 log,
                 String::from("./working-dir/"),
+                skip_gen,
                 isc_config.mirror.operators.unwrap(),
             )
             .await;

@@ -99,8 +99,8 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             get_cache_dir(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
         let cache_exists = Path::new(&working_dir_cache).exists();
         let sub_dir = dir.clone() + "blobs-store/";
-        log.hi(&format!("working dir cache {} ", working_dir_cache));
-        log.hi(&format!("sub_dir {} ", sub_dir.clone()));
+        log.info(&format!("working dir cache {} ", working_dir_cache));
+        log.info(&format!("blobs-store {} ", sub_dir.clone()));
         let mut exists = true;
         if manifest_exists {
             let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
@@ -157,7 +157,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             "release-manifests".to_string(),
         )
         .await;
-        log.mid(&format!(
+        log.info(&format!(
             "full path for directory 'release-manifests' {} ",
             &config_dir
         ));
@@ -261,15 +261,16 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             ));
             if futs.len() >= batch_size {
                 let response = futs.next().await.unwrap();
-                log.info(&format!(
+                log.debug(&format!(
                     "completed batch of {} {:#?}",
-                    batch_size, response
+                    batch_size,
+                    response.unwrap()
                 ));
             }
         }
         // Wait for the remaining to finish.
         while let Some(response) = futs.next().await {
-            log.info(&format!("completed rest of batch {:#?}", response));
+            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
         }
     }
 }
