@@ -1,4 +1,6 @@
 use custom_logger::*;
+use futures::stream::FuturesUnordered;
+use futures::stream::StreamExt;
 use mirror_auth::*;
 use mirror_catalog::*;
 use mirror_catalog_index::*;
@@ -45,8 +47,9 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
     // parse the config - iterate through each catalog
     let img_ref = parse_index(log, operators.clone());
-    log.debug(&format!("image refs {:#?}", img_ref));
-    let mut config_dir: String;
+    log.info(&format!("image refs {:#?}", img_ref));
+    let mut futs = FuturesUnordered::new();
+    let batch_size = 8;
 
     for ir in img_ref.iter() {
         let manifest_json =
@@ -79,7 +82,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
         }
         if !exists || !manifest_exists {
             log.info("detected change in index manifest");
-            fs::write(manifest_json, manifest.clone())
+            fs::write(manifest_json.clone(), manifest.clone())
                 .expect("unable to write (index) manifest.json file");
             let blobs_url = get_blobs_url(ir.clone());
             // use a concurrent process to get related blobs
@@ -111,50 +114,47 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             )
             .await;
             log.hi("completed untar of layers");
-
-            // find the directory 'configs'
-            config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
-            log.mid(&format!(
-                "full path for directory 'configs' {} ",
-                &config_dir
-            ));
-
-            // build and streamline all declarative configs
-            DeclarativeConfig::build_updated_configs(config_dir.clone() + &"/")
-                .expect("should build updated configs");
         }
 
         // find the directory 'configs'
-        config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
+        let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
         log.mid(&format!(
             "full path for directory 'configs' {} ",
             &config_dir
         ));
 
+        // build and streamline all declarative configs
+        DeclarativeConfig::build_updated_configs(log, config_dir.clone() + &"/")
+            .expect("should build updated configs");
+
+        let mut blob_tracker: Vec<String> = vec![];
+
         for operator in operators.iter() {
+            // iterate through all packages in imagesetconfig
             for pkg in operator.packages.clone().unwrap() {
                 let dc_map = DeclarativeConfig::get_declarativeconfig_map(
                     config_dir.clone() + &"/" + &pkg.name.clone() + &"/updated-configs/",
                 );
 
-                log.info(&format!("operator {:#?}", pkg.name));
+                log.ex(&format!("operator {:#?}", pkg.name));
+                // iterate for each bundle
                 for bundle in pkg.bundles.clone() {
                     let key = bundle.name.clone() + &"=olm.bundle".to_string();
                     let bundle = dc_map.get(&key).unwrap();
-                    log.info(&format!("bundle from dc_map {:#?}", bundle));
+                    log.debug(&format!("bundle from dc_map {:#?}", bundle));
                     // we can  get all related images
                     let related_images = bundle.related_images.clone().unwrap();
                     for ri in related_images.iter() {
                         let ir = parse_url(log, ri.image.clone());
                         let url = get_image_manifest_url(ir.clone());
-                        log.info(&format!("related image url {:#?}", url));
+                        log.info(&format!("mirroring image {:#?}", ri.image.clone()));
                         let manifest = reg_con
                             .get_manifest(url.clone(), token.clone())
                             .await
                             .unwrap();
                         log.trace(&format!("manifest {:#?}", manifest));
                         let op_dir = get_operator_manifest_json_dir(
-                            dir.clone(),
+                            manifest_dir.to_string(),
                             &(ir.namespace + "/" + &ir.name),
                             &ir.version,
                             &pkg.name,
@@ -168,7 +168,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         if opm.is_err() {
                             log.error(&format!("unable to parse manifest {:#?}", opm));
                         }
-                        //let op_manifest = opm.unwrap();
+
                         let manifest_list = parse_json_manifestlist(manifest.clone());
                         log.trace(&format!("manifest list {:#?}", manifest_list));
                         let mut fslayers: Vec<FsLayer> = Vec::new();
@@ -213,58 +213,87 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     let op_manifest =
                                         parse_json_manifest_operator(local_manifest.clone())
                                             .unwrap();
-                                    fslayers = op_manifest
-                                        .layers
-                                        .unwrap()
-                                        .iter()
-                                        .map(|layer| FsLayer {
-                                            blob_sum: layer.digest.clone(),
-                                            original_ref: Some(ri.image.clone()),
-                                            size: Some(layer.size),
-                                        })
-                                        .collect::<Vec<FsLayer>>();
+                                    // originally used map(|layer| FsLayer ...)
+                                    // changed to ensure no duplicates included using for..in
+                                    for layer in op_manifest.layers.unwrap().iter() {
+                                        if !blob_tracker.contains(&layer.digest.clone()) {
+                                            let fslayer = FsLayer {
+                                                blob_sum: layer.digest.clone(),
+                                                original_ref: Some(ri.image.clone()),
+                                                size: Some(layer.size),
+                                            };
+                                            fslayers.insert(0, fslayer);
+                                            blob_tracker.insert(0, layer.digest.clone());
+                                        }
+                                    }
                                     let config = op_manifest.config.unwrap();
-                                    let cfg = FsLayer {
-                                        blob_sum: config.digest,
-                                        original_ref: Some(ri.image.clone()),
-                                        size: Some(config.size),
-                                    };
-                                    fslayers.insert(0, cfg);
+                                    if !blob_tracker.contains(&config.digest) {
+                                        let cfg = FsLayer {
+                                            blob_sum: config.digest.clone(),
+                                            original_ref: Some(ri.image.clone()),
+                                            size: Some(config.size),
+                                        };
+                                        fslayers.insert(0, cfg);
+                                        blob_tracker.insert(0, config.digest);
+                                    }
                                 }
-                            } else {
-                                fs::write(op_dir.clone() + "/manifest.json", manifest.clone())
-                                    .expect("unable to write file");
-                                // now download each related images blobs
-                                log.debug(&format!("manifest dir {:#?}", op_dir));
-                                let op_manifest =
-                                    parse_json_manifest_operator(manifest.clone()).unwrap();
-                                log.trace(&format!("op_manifest {:#?}", op_manifest));
-                                // convert op_manifest.layer to FsLayer
-                                fslayers = op_manifest
-                                    .layers
-                                    .unwrap()
-                                    .iter()
-                                    .map(|layer| FsLayer {
+                            }
+                        } else {
+                            fs::write(op_dir.clone() + "/manifest.json", manifest.clone())
+                                .expect("unable to write file");
+                            // now download each related images blobs
+                            log.debug(&format!("manifest dir {:#?}", op_dir));
+                            let op_manifest =
+                                parse_json_manifest_operator(manifest.clone()).unwrap();
+                            log.trace(&format!("op_manifest {:#?}", op_manifest));
+                            // convert op_manifest.layer to FsLayer
+                            // originally used map(|layer| FsLayer ...)
+                            // changed to ensure no duplicates included using for..in
+                            for layer in op_manifest.layers.unwrap().iter() {
+                                if !blob_tracker.contains(&layer.digest.clone()) {
+                                    let fslayer = FsLayer {
                                         blob_sum: layer.digest.clone(),
                                         original_ref: Some(ri.image.clone()),
                                         size: Some(layer.size),
-                                    })
-                                    .collect::<Vec<FsLayer>>();
-                                // add configs
-                                let config = op_manifest.config.unwrap();
-                                let cfg = FsLayer {
-                                    blob_sum: config.digest,
-                                    original_ref: Some(ri.image.clone()),
-                                    size: Some(config.size),
-                                };
+                                    };
+                                    fslayers.insert(0, fslayer);
+                                    blob_tracker.insert(0, layer.digest.clone());
+                                }
+                            }
+                            // add configs
+                            let config = op_manifest.config.unwrap();
+                            let cfg = FsLayer {
+                                blob_sum: config.digest.clone(),
+                                original_ref: Some(ri.image.clone()),
+                                size: Some(config.size),
+                            };
+                            if !blob_tracker.contains(&config.digest) {
                                 fslayers.insert(0, cfg);
+                                blob_tracker.insert(0, config.digest);
                             }
                         }
 
                         let op_url = get_blobs_url_by_string(ri.image.clone());
-                        let _response = reg_con
-                            .get_blobs(log, sub_dir.clone(), op_url, token.clone(), fslayers)
-                            .await;
+                        // batch the calls
+                        futs.push(reg_con.get_blobs(
+                            log,
+                            sub_dir.clone(),
+                            op_url,
+                            token.clone(),
+                            fslayers,
+                        ));
+                        if futs.len() >= batch_size {
+                            let response = futs.next().await.unwrap();
+                            log.debug(&format!(
+                                "completed batch of {} {:#?}",
+                                batch_size,
+                                response.unwrap()
+                            ));
+                        }
+                    }
+                    // wait for the remaining to finish.
+                    while let Some(response) = futs.next().await {
+                        log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
                     }
                 }
             }
@@ -376,7 +405,7 @@ pub fn parse_url(log: &Logging, img: String) -> ImageReference {
         name: name.split("@").nth(0).unwrap().to_string(),
         version: "sha256:".to_owned() + ver,
     };
-    log.warn(&format!("image reference {:#?}", img));
+    log.trace(&format!("image reference {:#?}", img));
     ir
 }
 

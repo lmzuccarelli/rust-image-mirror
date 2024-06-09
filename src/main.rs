@@ -74,20 +74,6 @@ async fn main() {
     // initialize the client request interface
     let reg_con = ImplRegistryInterface {};
 
-    // check for release image
-    if isc_config.mirror.operators.is_some() {
-        operator_mirror_to_disk(
-            reg_con.clone(),
-            log,
-            String::from("./working-dir/"),
-            isc_config.mirror.operators.clone().unwrap(),
-        )
-        .await;
-    }
-
-    // initialize the client request interface
-    let reg_con = ImplRegistryInterface {};
-
     // this is mirrorToDisk
     if args.destination.contains("file://") {
         // check for release image
