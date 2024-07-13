@@ -10,6 +10,7 @@ use std::fs;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
+use std::process;
 use walkdir::WalkDir;
 
 use crate::config::load::*;
@@ -42,6 +43,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     log: &Logging,
     dir: String,
     skip_gen: bool,
+    dry_run: bool,
     operators: Vec<Operator>,
 ) {
     log.hi("operator collector mode: mirrorToDisk");
@@ -57,10 +59,14 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             get_manifest_json_file(dir.clone(), ir.name.clone(), ir.version.clone());
         log.trace(&format!("manifest json file {}", manifest_json));
         let token = get_token(log, ir.registry.clone()).await;
+        if token.is_err() {
+            log.error(&format!("{:#?}", token.err().unwrap()));
+            process::exit(1)
+        }
         // use token to get manifest
         let manifest_url = get_image_manifest_url(ir.clone());
         let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.clone())
+            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
             .await
             .unwrap();
 
@@ -92,7 +98,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     log,
                     sub_dir.clone(),
                     blobs_url,
-                    token.clone(),
+                    token.as_ref().unwrap().to_string(),
                     res_manifest_in_mem.fs_layers.clone(),
                 )
                 .await;
@@ -131,6 +137,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
         }
 
         let mut blob_tracker: Vec<String> = vec![];
+        let mut image_vec: Vec<String> = Vec::new();
 
         for operator in operators.iter() {
             // iterate through all packages in imagesetconfig
@@ -148,6 +155,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     // we can  get all related images
                     let related_images = bundle.related_images.clone().unwrap();
                     for ri in related_images.iter() {
+                        image_vec.insert(0, ri.image.clone());
                         let ir = parse_url(log, ri.image.clone());
                         let url = get_image_manifest_url(ir.clone());
                         log.info(&format!(
@@ -155,7 +163,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                             ir.namespace.clone() + "/" + &ir.name
                         ));
                         let manifest = reg_con
-                            .get_manifest(url.clone(), token.clone())
+                            .get_manifest(url.clone(), token.as_ref().unwrap().to_string())
                             .await
                             .unwrap();
                         log.trace(&format!("manifest {:#?}", manifest));
@@ -199,7 +207,10 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     ));
                                     // use the RegistryInterface to make the api call
                                     let local_manifest = reg_con
-                                        .get_manifest(sub_manifest_url.clone(), token.clone())
+                                        .get_manifest(
+                                            sub_manifest_url.clone(),
+                                            token.as_ref().unwrap().to_string(),
+                                        )
                                         .await
                                         .unwrap();
 
@@ -279,27 +290,41 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                             }
                         }
 
-                        let op_url = get_blobs_url_by_string(ri.image.clone());
-                        // batch the calls
-                        futs.push(reg_con.get_blobs(
-                            log,
-                            sub_dir.clone(),
-                            op_url,
-                            token.clone(),
-                            fslayers,
-                        ));
-                        if futs.len() >= batch_size {
-                            let response = futs.next().await.unwrap();
-                            log.debug(&format!(
-                                "completed batch of {} {:#?}",
-                                batch_size,
-                                response.unwrap()
+                        if dry_run {
+                            let mut buf = String::from("");
+                            for k in image_vec.iter() {
+                                let src = &format!("{}{}", "docker://", k.to_string());
+                                let idx = k.to_string().find("/").unwrap();
+                                let s: &str = &k[idx..];
+                                let dest =
+                                    &format!("{}{}", "docker://localhost:5000", s.to_string());
+                                buf = buf + &format!("{} = {}\n", src, dest);
+                            }
+                            fs::write(dir.clone() + "operator-mapping.txt", buf)
+                                .expect("should write release-mapping.txt file");
+                        } else {
+                            let op_url = get_blobs_url_by_string(ri.image.clone());
+                            // batch the calls
+                            futs.push(reg_con.get_blobs(
+                                log,
+                                sub_dir.clone(),
+                                op_url,
+                                token.as_ref().unwrap().to_string(),
+                                fslayers,
                             ));
+                            if futs.len() >= batch_size {
+                                let response = futs.next().await.unwrap();
+                                log.debug(&format!(
+                                    "completed batch of {} {:#?}",
+                                    batch_size,
+                                    response.unwrap()
+                                ));
+                            }
                         }
-                    }
-                    // wait for the remaining to finish.
-                    while let Some(response) = futs.next().await {
-                        log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+                        // wait for the remaining to finish.
+                        while let Some(response) = futs.next().await {
+                            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+                        }
                     }
                 }
             }
@@ -761,6 +786,8 @@ mod tests {
             fake.clone(),
             log,
             String::from("./test-artifacts/"),
+            true,
+            true,
             ops.clone()
         ));
     }

@@ -35,6 +35,11 @@ pub struct Cli {
     )]
     pub destination: String,
 
+    /// set the dry-run flag.
+    /// dont perform a mirror but create a mapping.txt file of all related images
+    #[arg(short, long, value_name = "dry-run", default_value = "false")]
+    pub dry_run: bool,
+
     /// set the skip flag. Valid arguments are none, release, operators, additional,
     /// release-operators
     #[arg(value_enum, long, value_name = "skip", default_value = "none")]

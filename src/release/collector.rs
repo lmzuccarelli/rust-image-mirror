@@ -10,6 +10,7 @@ use std::fs;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
+use std::process;
 use walkdir::WalkDir;
 
 use crate::config::load::*;
@@ -70,6 +71,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     log: &Logging,
     dir: String,
     skip_manifests: bool,
+    dry_run: bool,
     releases: Vec<Release>,
 ) {
     log.hi("release collector mode: mirrorToDisk");
@@ -83,10 +85,14 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             get_manifest_json_file(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
         log.trace(&format!("manifest json file {}", manifest_json));
         let token = get_token(log, img_ref.clone().registry).await;
+        if token.is_err() {
+            log.error(&format!("{:#?}", token.err().unwrap()));
+            process::exit(1);
+        }
         let manifest_url = get_image_manifest_url(img_ref.clone());
         log.trace(&format!("manifest url {}", manifest_url));
         let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.clone())
+            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
             .await
             .unwrap();
 
@@ -122,7 +128,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     log,
                     sub_dir.clone(),
                     blobs_url,
-                    token.clone(),
+                    token.as_ref().unwrap().to_string(),
                     res_manifest_in_mem.fs_layers.clone(),
                 )
                 .await;
@@ -175,6 +181,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         let mut vec_flayer: Vec<FsLayer> = Vec::new();
         let mut vec_common_blobs: Vec<String> = Vec::new();
         let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
+        let mut image_vec: Vec<String> = Vec::new();
         let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
         let mut manifest: String;
 
@@ -183,12 +190,13 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             let release_op_dir = release_dir.clone() + "/release/" + &img.name;
             let release_op = release_op_dir.clone() + "/manifest.json";
             fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
+            image_vec.insert(0, img.from.name.clone());
             if !skip_manifests {
                 let manifest_url = get_manifest_url(img.from.name.clone());
                 log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
                 // use the RegistryInterface to make the call
                 manifest = reg_con
-                    .get_manifest(manifest_url.clone(), token.clone())
+                    .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
                     .await
                     .unwrap();
 
@@ -245,32 +253,45 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
         }
 
-        // get blobs in batch of 8
-        // each future handles get_blobs api call
-        // with 8 threads (one per digest)
-        let mut futs = FuturesUnordered::new();
-        let batch_size = 8;
-        for (k, v) in fslayers.iter() {
-            // batch the calls
-            futs.push(reg_con.get_blobs(
-                log,
-                blobs_dir.clone(),
-                k.to_string(),
-                token.clone(),
-                v.clone(),
-            ));
-            if futs.len() >= batch_size {
-                let response = futs.next().await.unwrap();
-                log.debug(&format!(
-                    "completed batch of {} {:#?}",
-                    batch_size,
-                    response.unwrap()
-                ));
+        if dry_run {
+            let mut buf = String::from("");
+            for k in image_vec.iter() {
+                let src = &format!("{}{}", "docker://", k.to_string());
+                let idx = k.to_string().find("/").unwrap();
+                let s: &str = &k[idx..];
+                let dest = &format!("{}{}", "docker://localhost:5000", s.to_string());
+                buf = buf + &format!("{} = {}\n", src, dest);
             }
-        }
-        // Wait for the remaining to finish.
-        while let Some(response) = futs.next().await {
-            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+            fs::write(dir.clone() + "release-mapping.txt", buf)
+                .expect("should write release-mapping.txt file");
+        } else {
+            // get blobs in batch of 8
+            // each future handles get_blobs api call
+            // with 8 threads (one per digest)
+            let mut futs = FuturesUnordered::new();
+            let batch_size = 8;
+            for (k, v) in fslayers.iter() {
+                // batch the calls
+                futs.push(reg_con.get_blobs(
+                    log,
+                    blobs_dir.clone(),
+                    k.to_string(),
+                    token.as_ref().unwrap().to_string(),
+                    v.clone(),
+                ));
+                if futs.len() >= batch_size {
+                    let response = futs.next().await.unwrap();
+                    log.debug(&format!(
+                        "completed batch of {} {:#?}",
+                        batch_size,
+                        response.unwrap()
+                    ));
+                }
+            }
+            // Wait for the remaining to finish.
+            while let Some(response) = futs.next().await {
+                log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+            }
         }
     }
 }
@@ -309,6 +330,21 @@ pub async fn release_disk_to_mirror<T: RegistryInterface>(
 }
 
 // utility functions
+
+pub fn parse_op_url(url: String) -> ImageReference {
+    let mut tmp = url.split("v2");
+    let i_reg = tmp.nth(0).unwrap();
+    let i_ref = tmp.nth(0).unwrap();
+    let mut i = i_ref.split("/blobs/");
+
+    let ir = ImageReference {
+        registry: i_reg.split("https://").nth(1).unwrap().to_string(),
+        namespace: i.nth(0).unwrap().to_string(),
+        name: "".to_string(),
+        version: i.nth(0).unwrap().to_string(),
+    };
+    ir
+}
 
 pub fn parse_json_release_imagereference(
     file: String,

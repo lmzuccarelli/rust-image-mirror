@@ -9,6 +9,7 @@ use tokio;
 
 // define local modules
 mod api;
+mod clusterresources;
 mod config;
 mod diff;
 mod error;
@@ -17,6 +18,7 @@ mod release;
 
 // use local modules
 use api::schema::*;
+use clusterresources::*;
 use config::load::*;
 use diff::metadata_cache::*;
 
@@ -28,6 +30,7 @@ async fn main() {
     let level = args.loglevel.unwrap().to_string();
     let skip_manifests = args.skip_manifest_check.unwrap().to_string();
     let skip_gen = args.skip_gen_declconfig;
+    let dry_run = args.dry_run;
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -85,6 +88,7 @@ async fn main() {
                 log,
                 String::from("./working-dir/"),
                 skip_manifest_check,
+                dry_run,
                 isc_config.mirror.release.unwrap(),
             )
             .await;
@@ -96,6 +100,7 @@ async fn main() {
                 log,
                 String::from("./working-dir/"),
                 skip_gen,
+                dry_run,
                 isc_config.mirror.operators.unwrap(),
             )
             .await;
