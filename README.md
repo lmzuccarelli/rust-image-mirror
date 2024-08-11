@@ -48,7 +48,7 @@ mirror:
 cargo run -- --config imagesetconfig.yaml 
 ```
 
-## Testing
+## Testing & Debugging
 
 Ensure grcov and  llvm tools-preview are installed
 
@@ -74,6 +74,30 @@ check the code coverage
 ```
 $ grcov . --binary-path ./target/debug/deps/ -s . -t html --branch --ignore-not-existing --ignore '../*' --ignore "/*" --ignore "src/main.rs" -o target/coverage/html
 
+```
+
+To Debug
+
+execute the correct make
+
+```
+make build-debug
+
+# launch rust-gdb
+
+rust-gdb --args target/debug/image-mirror --config imagesetconfig.yaml  --loglevel info
+
+# set breakpoint
+b src/release/collector.rs:461
+
+# execute run
+r
+
+# step
+n
+
+# print
+p img.name
 ```
 
 ### Coverage Overview

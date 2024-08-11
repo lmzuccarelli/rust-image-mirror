@@ -11,6 +11,9 @@ build-debug:
 	cargo build
 
 build:
+	# used for production release
+	# cleanup all debug artifacts
+	rm -rf ./target/debug
 	cargo build --release
 
 test: clean

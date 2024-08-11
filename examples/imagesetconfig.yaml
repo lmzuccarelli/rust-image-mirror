@@ -1,0 +1,20 @@
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift/v3alpha1
+mirror:
+  release: 
+  - version: "4.15.8"
+    image: "quay.io/openshift-release-dev/ocp-release:4.15.8-x86_64"
+  operators:
+  - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.15"
+    packages:
+    #- name: aws-load-balancer-operator
+    #  bundles: 
+    #  - name: "aws-load-balancer-operator.v1.1.0"
+    #- name: amq-streams
+    #  bundles:
+    #  - name: "amqstreams.v2.6.0-1"
+    - name: kubernetes-nmstate-operator
+    #bundles:
+    #- name: "kubernetes-nmstate-operator.4.15.0-202407220806"
+  additionalImages:
+  - name: registry.redhat.io/ubi9/ubi-micro:latest 

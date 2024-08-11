@@ -49,7 +49,7 @@ pub struct Package {
     pub name: String,
 
     #[serde(rename = "bundles")]
-    pub bundles: Vec<Bundle>,
+    pub bundles: Option<Vec<Bundle>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

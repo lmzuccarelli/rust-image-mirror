@@ -1,10 +1,18 @@
+use crate::api::schema::MirrorImageInfo;
+use crate::config::load::*;
+use crate::image::utils::*;
+use crate::parse_json_manifestlist;
+use chrono::{DateTime, Local};
 use custom_logger::*;
 use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
+use hex::encode;
 use mirror_auth::*;
 use mirror_catalog_index::*;
+use mirror_copy::parse_json_manifest_operator;
 use mirror_copy::*;
 use serde_derive::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::DirBuilder;
@@ -12,8 +20,6 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process;
 use walkdir::WalkDir;
-
-use crate::config::load::*;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ReleaseSchema {
@@ -65,77 +71,276 @@ pub struct MetaData {
     pub creation: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReleaseImageInfo {
+    pub file: String,
+    pub original_ref: String,
+}
+
 // collect all operator images
 pub async fn release_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
-    skip_manifests: bool,
+    skip_manifests_check: bool,
     dry_run: bool,
     releases: Vec<Release>,
 ) {
-    log.hi("release collector mode: mirrorToDisk");
+    log.hi("release collector mode: mirror-to-disk");
+
+    // set up dir to store all manifests
+    fs::create_dir_all(&format!(
+        "{}/{}",
+        dir.clone(),
+        "/manifests/release".to_string()
+    ))
+    .expect("should create manifests directory");
+
+    let mut vec_process_manifests: Vec<ReleaseImageInfo> = Vec::new();
+    let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
+    let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
 
     // parse the config
     for release in releases.iter() {
-        let img_ref = convert_release_image_index(log, release.image.clone());
-        log.debug(&format!("image refs {:#?}", img_ref));
-
-        let manifest_json =
-            get_manifest_json_file(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
-        log.trace(&format!("manifest json file {}", manifest_json));
-        let token = get_token(log, img_ref.clone().registry).await;
+        // parse image index
+        let index_image_ref = convert_release_image_index(log, release.image.clone());
+        log.debug(&format!("image refs {:#?}", index_image_ref.clone()));
+        let token = get_token(log, index_image_ref.clone().registry).await;
         if token.is_err() {
+            // if token is not found or expired
+            // there is no use continuing
             log.error(&format!("{:#?}", token.err().unwrap()));
             process::exit(1);
         }
-        let manifest_url = get_image_manifest_url(img_ref.clone());
-        log.trace(&format!("manifest url {}", manifest_url));
+
+        // construct manifest api call
+        let manifest_url = &format!(
+            "https://{}/v2/{}/{}/manifests/{}",
+            index_image_ref.registry,
+            index_image_ref.namespace,
+            index_image_ref.name,
+            index_image_ref.version
+        );
+        log.info(&format!("checking manifest for {}", release.image.clone()));
+
         let manifest = reg_con
             .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
-            .await
-            .unwrap();
+            .await;
 
-        let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
-        log.info(&format!("manifest directory {}", manifest_dir));
-        fs::create_dir_all(manifest_dir).expect("unable to create directory manifest directory");
-        let manifest_exists = Path::new(&manifest_json).exists();
-        let res_manifest_in_mem = parse_json_manifest(manifest.clone()).unwrap();
-        let working_dir_cache =
-            get_cache_dir(dir.clone(), img_ref.name.clone(), img_ref.version.clone());
-        let cache_exists = Path::new(&working_dir_cache).exists();
-        let sub_dir = dir.clone() + "blobs-store/";
-        log.info(&format!("working dir cache {} ", working_dir_cache));
-        log.info(&format!("blobs-store {} ", sub_dir.clone()));
-        let mut exists = true;
-        if manifest_exists {
-            let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
-            let res_manifest_on_disk = parse_json_manifest(manifest_on_disk).unwrap();
-            if res_manifest_on_disk != res_manifest_in_mem || !cache_exists {
-                exists = false;
+        if manifest.is_ok() {
+            // multi arch
+            // in the cli ensure that only multi is entered
+            // and no other platform architecture
+            if release.image.clone().contains("multi") {
+                let manifest_list = parse_json_manifestlist(manifest.unwrap().clone());
+                if manifest_list.is_ok() {
+                    for mfst in manifest_list.unwrap().manifests.iter() {
+                        // contruct api call for manifests
+                        let manifest_url = &format!(
+                            "https://{}/v2/{}/{}/manifests/{}",
+                            index_image_ref.clone().registry,
+                            index_image_ref.clone().namespace,
+                            index_image_ref.clone().name,
+                            mfst.digest.as_ref().unwrap()
+                        );
+                        log.info(&format!(
+                            "checking multi arch manifest for {}",
+                            release.image.clone() + "/" + mfst.digest.as_ref().unwrap()
+                        ));
+
+                        let original_ref = format!(
+                            "{}-{}",
+                            release.image.clone().split("-multi").nth(0).unwrap(),
+                            mfst.platform.as_ref().unwrap().architecture
+                        );
+
+                        let manifest = reg_con
+                            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
+                            .await;
+
+                        if manifest.is_ok() {
+                            // create the directory to store manifests in
+                            let manifest_json_dir = &format!(
+                                "{}/{}/{}-{}",
+                                dir.clone(),
+                                "ocp-release",
+                                index_image_ref.clone().version.split("-").nth(0).unwrap(),
+                                mfst.platform.as_ref().unwrap().architecture,
+                            );
+                            log.info(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
+                            fs::create_dir_all(manifest_json_dir)
+                                .expect("should create manifest directory");
+                            let mfst_file = format!("{}/manifest.json", manifest_json_dir);
+                            // check if it exists first
+                            let exists = Path::new(&mfst_file).exists();
+                            if exists {
+                                let msft_on_disk = fs::read_to_string(mfst_file.clone());
+                                if msft_on_disk.is_ok() {
+                                    if msft_on_disk.unwrap()
+                                        != manifest.as_ref().unwrap().to_string()
+                                    {
+                                        fs::write(mfst_file.clone(), manifest.unwrap().clone())
+                                            .expect("should write manifest file");
+                                        let release_image_info = ReleaseImageInfo {
+                                            file: mfst_file.clone(),
+                                            original_ref: original_ref.clone(),
+                                        };
+                                        vec_process_manifests.insert(0, release_image_info);
+                                    }
+                                }
+                            } else {
+                                fs::write(mfst_file.clone(), manifest.unwrap().clone())
+                                    .expect("should write manifest file");
+                                let release_image_info = ReleaseImageInfo {
+                                    file: mfst_file.clone(),
+                                    original_ref: original_ref.clone(),
+                                };
+                                vec_process_manifests.insert(0, release_image_info);
+                            }
+                        } else {
+                            log.error(&format!(
+                                "release servere multi arch error {:#}",
+                                manifest.err().unwrap()
+                            ));
+                            process::exit(1);
+                        }
+                    }
+                }
+            } else {
+                // standard manifest
+                let manifest_json_dir = &format!(
+                    "{}/{}/{}",
+                    dir.clone(),
+                    "ocp-release",
+                    index_image_ref.clone().version,
+                );
+                log.debug(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
+                fs::create_dir_all(manifest_json_dir).expect("should create manifest directory");
+                let mfst_file = format!("{}/manifest.json", manifest_json_dir);
+                let msft_on_disk = fs::read_to_string(mfst_file.clone());
+                // check if it exists first
+                let exists = Path::new(&mfst_file).exists();
+                if exists {
+                    if msft_on_disk.is_ok() {
+                        if msft_on_disk.unwrap() != manifest.as_ref().unwrap().to_string() {
+                            fs::write(mfst_file.clone(), manifest.unwrap().clone())
+                                .expect("should write manifest file");
+                            let release_image_info = ReleaseImageInfo {
+                                file: mfst_file.clone(),
+                                original_ref: release.image.clone(),
+                            };
+                            vec_process_manifests.insert(0, release_image_info);
+                        }
+                    }
+                } else {
+                    fs::write(mfst_file.clone(), manifest.unwrap().clone())
+                        .expect("should write manifest file");
+                    let release_image_info = ReleaseImageInfo {
+                        file: mfst_file.clone(),
+                        original_ref: release.image.clone(),
+                    };
+                    vec_process_manifests.insert(0, release_image_info);
+                }
             }
         } else {
-            exists = false;
-        }
-        if !exists {
-            log.info("detected change in index manifest");
-            fs::write(manifest_json, manifest.clone())
-                .expect("unable to write (index) manifest.json file");
-            let blobs_url = get_blobs_url(img_ref.clone());
-            // use a concurrent process to get related blobs
-            let response = reg_con
-                .get_blobs(
-                    log,
-                    sub_dir.clone(),
-                    blobs_url,
-                    token.as_ref().unwrap().to_string(),
-                    res_manifest_in_mem.fs_layers.clone(),
-                )
-                .await;
-            log.info(&format!(
-                "completed release image index download {:#?}",
-                response
+            log.error(&format!(
+                "release : servere error {:#}",
+                manifest.err().unwrap()
             ));
+            process::exit(1);
+        }
+
+        if vec_process_manifests.clone().len() == 0 {
+            log.info("no change detected in manifest files")
+        }
+
+        for mf in vec_process_manifests.clone().iter() {
+            log.info("changed detected in manifest file/s");
+            log.info(&format!("processing {} ", mf.file));
+            log.debug(&format!("original ref {} ", mf.original_ref));
+            let manifest_on_disk = fs::read_to_string(&mf.file);
+            let mut vec_fslayer: Vec<FsLayer> = Vec::new();
+
+            let image_ref = convert_release_image_index(log, mf.clone().original_ref);
+
+            let blobs_url = &format!(
+                "https://{}/v2/{}/{}/blobs/",
+                image_ref.registry, image_ref.namespace, image_ref.name
+            );
+            let blobs_dir = &format!("{}/{}/", dir.clone(), "blobs-store",);
+            log.info(&format!("blobs_dir {}", blobs_dir.clone()));
+
+            if manifest_on_disk.is_ok() {
+                let data = manifest_on_disk.unwrap();
+                let parsed_manifest = parse_json_manifest_operator(data.clone().to_string());
+                if parsed_manifest.is_ok() {
+                    // not oci format
+                    let version = parsed_manifest.as_ref().unwrap().schema_version.unwrap();
+                    if version == 1 {
+                        let parsed_manifest = parse_json_manifest(data.clone().to_string());
+                        if parsed_manifest.is_ok() {
+                            let v1_mnfst = parsed_manifest.unwrap();
+                            let response = reg_con
+                                .get_blobs(
+                                    log,
+                                    blobs_dir.clone(),
+                                    blobs_url.to_string(),
+                                    token.as_ref().unwrap().to_string(),
+                                    v1_mnfst.fs_layers.clone(),
+                                )
+                                .await;
+                            if response.is_err() {
+                                log.error(&format!("{:#?}", response.err().unwrap()));
+                                process::exit(1);
+                            }
+                            vec_fslayer.append(&mut v1_mnfst.fs_layers.clone());
+                            log.info("completed release image index (v1) download");
+                        }
+                    } else {
+                        let layers = parsed_manifest.as_ref().unwrap();
+                        // ignore config layer
+                        for layer in layers.clone().layers.unwrap().iter() {
+                            let fslayer = FsLayer {
+                                blob_sum: layer.digest.clone(),
+                                original_ref: Some(mf.clone().original_ref),
+                                size: Some(layer.size),
+                            };
+                            vec_fslayer.insert(0, fslayer);
+                        }
+                        let response = reg_con
+                            .get_blobs(
+                                log,
+                                blobs_dir.clone(),
+                                blobs_url.to_string(),
+                                token.as_ref().unwrap().to_string(),
+                                vec_fslayer.clone(),
+                            )
+                            .await;
+
+                        if response.is_err() {
+                            log.error(&format!("{:#?}", response.err().unwrap()));
+                            process::exit(1);
+                        }
+
+                        log.info("completed release image index (v2) download");
+                    }
+                }
+            } else {
+                log.error(&format!(
+                    "could not read manifest {:#?}",
+                    manifest_on_disk.err().unwrap()
+                ));
+            }
+
+            let working_dir_cache = &format!(
+                "{}/{}/{}/cache",
+                dir.clone(),
+                image_ref.name.clone(),
+                image_ref.version.clone(),
+            );
+            log.info(&format!("working_dir_cache {}", working_dir_cache));
+
+            let cache_exists = Path::new(&working_dir_cache).exists();
             if cache_exists {
                 rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
             }
@@ -148,133 +353,238 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 
             untar_layers(
                 log,
-                sub_dir.clone(),
+                blobs_dir.clone(),
                 working_dir_cache.clone(),
-                res_manifest_in_mem.fs_layers,
+                vec_fslayer.clone(),
             )
             .await;
             log.hi("completed untar of layers");
         }
 
         // find the directory 'release-manifests'
-        let config_dir = find_dir(
-            log,
-            working_dir_cache.clone(),
-            "release-manifests".to_string(),
-        )
-        .await;
-        log.info(&format!(
-            "full path for directory 'release-manifests' {} ",
-            &config_dir
-        ));
+        // use the release image version (before the "-") to match
+        let release_version = release.image.split(":").nth(1).unwrap();
+        let version = release_version.split("-").nth(0).unwrap();
+        let arch = release_version.split("-").nth(1).unwrap();
 
-        // parse the image-references json from release-manfests directory
-        let imgs = parse_json_release_imagereference(config_dir + "/image-references");
-        log.trace(&format!(
-            "images from release-manifests/image-reference {:#?}",
-            imgs
-        ));
+        let base_dir = format!("{}/{}", dir.clone(), "ocp-release");
 
-        // iterate through all the release image-references
-        let release_dir =
-            dir.clone() + "/" + &img_ref.clone().name + "/" + &img_ref.clone().version + "/";
-        let mut vec_flayer: Vec<FsLayer> = Vec::new();
+        let dt = Local::now();
+        let naive_utc = dt.naive_utc();
+        let offset = dt.offset().clone();
+        let dt_new = DateTime::<Local>::from_naive_utc_and_offset(naive_utc, offset);
+        let dt_formated = dt_new.format("%Y-%m-%d %H:%M:%S%.3f");
         let mut vec_common_blobs: Vec<String> = Vec::new();
-        let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
-        let mut image_vec: Vec<String> = Vec::new();
-        let blobs_dir = dir.clone() + &"/blobs-store/".to_string();
-        let mut manifest: String;
+        let mut vec_flayer: Vec<FsLayer> = Vec::new();
 
-        for img in imgs.unwrap().spec.tags.iter() {
-            // first check if the release operators exist on disk
-            let release_op_dir = release_dir.clone() + "/release/" + &img.name;
-            let release_op = release_op_dir.clone() + "/manifest.json";
-            fs::create_dir_all(release_op_dir.clone()).expect("should create release operator dir");
-            image_vec.insert(0, img.from.name.clone());
-            if !skip_manifests {
-                let manifest_url = get_manifest_url(img.from.name.clone());
-                log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
-                // use the RegistryInterface to make the call
-                manifest = reg_con
-                    .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
-                    .await
-                    .unwrap();
+        for e in WalkDir::new(base_dir.clone().to_string()) {
+            let obj = e.unwrap();
+            if obj.path().is_file() {
+                let manifest_file = obj.path().to_string_lossy();
+                if manifest_file.contains(version) && manifest_file.contains("image-references") {
+                    log.info(&format!(
+                        "processing release-references {:#?} ",
+                        manifest_file.clone(),
+                    ));
+                    let res_manifest_in_mem =
+                        parse_json_release_imagereference(manifest_file.clone().to_string());
+                    if res_manifest_in_mem.is_ok() {
+                        let rm = res_manifest_in_mem.unwrap();
+                        for img in rm.clone().spec.tags.iter() {
+                            let image_ref = parse_image(log, img.clone().from.name);
+                            if !skip_manifests_check {
+                                let manifest_url = &format!(
+                                    "https://{}/v2/{}/{}/manifests/{}",
+                                    image_ref.registry,
+                                    image_ref.namespace,
+                                    image_ref.name,
+                                    image_ref.version,
+                                );
+                                log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
+                                // use the RegistryInterface to make the call
+                                let res_manifest = reg_con
+                                    .get_manifest(
+                                        manifest_url.clone(),
+                                        token.as_ref().unwrap().to_string(),
+                                    )
+                                    .await;
+                                log.ex(&format!("checking manifest {:#?}", img.name));
 
-                log.info(&format!("checking manifest {:#?}", img.name.clone()));
-                log.trace(&format!("manifest contents {:#?}", manifest));
-                let metadata = fs::metadata(release_op);
+                                if res_manifest.is_ok() {
+                                    let manifest = res_manifest.unwrap();
+                                    let digest = get_sha_from_contents(manifest.clone().as_bytes());
+                                    if digest != image_ref.version.split(":").nth(1).unwrap() {
+                                        log.warn(&format!(
+                                            "digest and file sha does not match {} : {}",
+                                            img.name, image_ref.version
+                                        ));
+                                    }
+                                    let f = &format!(
+                                        "{}/manifests/release/{}-{}.json",
+                                        dir.clone(),
+                                        image_ref.version,
+                                        arch
+                                    );
+                                    let mut exists = true;
+                                    let manifest_on_disk = fs::read_to_string(f);
+                                    if manifest_on_disk.is_ok() {
+                                        if manifest_on_disk.unwrap() != manifest {
+                                            exists = false;
+                                        }
+                                    } else {
+                                        exists = false;
+                                    }
+                                    if !exists {
+                                        fs::write(f, manifest.clone())
+                                            .expect("unable to write file");
+                                    }
+                                } else {
+                                    log.error(&format!(
+                                        "manifest api call {:#?}",
+                                        res_manifest.err().unwrap()
+                                    ));
+                                }
+                            }
 
-                if metadata.is_ok() {
-                    let meta = metadata.as_ref().unwrap();
-                    if meta.len() != manifest.len() as u64 {
-                        log.info(&format!("writing manifest for {:#?}", img.name.clone()));
-                        fs::write(release_op_dir + "/manifest.json", manifest.clone())
-                            .expect("unable to write manifest.json file");
+                            let mnfst_on_disk = format!(
+                                "{}/manifests/release/{}-{}.json",
+                                dir.clone(),
+                                image_ref.version,
+                                arch
+                            );
+
+                            // it may seem ridiculous to write then read from disk
+                            // this was done intentionally as it ensures that our manifest
+                            // file is correct and parsable
+                            let md = fs::read_to_string(mnfst_on_disk.clone());
+                            if md.is_ok() {
+                                log.debug(&format!(
+                                    "verifying manifest {} [{}]",
+                                    img.name, image_ref.version
+                                ));
+                                let op_manifest =
+                                    parse_json_manifest_operator(md.unwrap()).unwrap();
+
+                                let op_url = format!(
+                                    "https://{}/v2/{}/{}/blobs/",
+                                    image_ref.registry, image_ref.namespace, image_ref.name,
+                                );
+
+                                for layer in op_manifest.layers.unwrap().iter() {
+                                    // check for duplicates
+                                    if vec_common_blobs.contains(&layer.digest) {
+                                        continue;
+                                    }
+                                    vec_common_blobs.push(layer.digest.clone());
+                                    // convert op_manifest.layer to FsLayer
+                                    let fslayer = FsLayer {
+                                        blob_sum: layer.digest.clone(),
+                                        original_ref: Some(img.from.name.clone()),
+                                        size: Some(layer.size),
+                                    };
+                                    vec_flayer.insert(0, fslayer);
+                                }
+                                // add configs
+                                let config = op_manifest.config.unwrap();
+                                let cfg = FsLayer {
+                                    blob_sum: config.digest,
+                                    original_ref: Some(img.from.name.clone()),
+                                    size: Some(config.size),
+                                };
+                                vec_flayer.insert(0, cfg);
+                                // finally add the fslayers to the hashmap
+                                fslayers.insert(op_url.clone(), vec_flayer.clone());
+                            } else {
+                                log.error(&format!(
+                                    "reading manifest {:#?} from disk {:#?}",
+                                    mnfst_on_disk.clone(),
+                                    md.err().unwrap()
+                                ));
+                                process::exit(1);
+                            }
+
+                            let mii = MirrorImageInfo {
+                                reference: img.clone().from.name.clone(),
+                                name: img.name.clone(),
+                                arch: arch.to_string(),
+                                namespace: image_ref.namespace + &"/" + &image_ref.name,
+                                digest: image_ref.version,
+                                manifest_type: "manifest".to_string(),
+                                tag: None,
+                                created: dt_formated.to_string(),
+                                mirror_type: "release".to_string(),
+                                bundle: None,
+                            };
+                            image_ref_tracker.insert(0, mii.clone());
+                        }
+                    } else {
+                        log.error(&format!(
+                            "parsing release reference {:#?}",
+                            res_manifest_in_mem.err().unwrap()
+                        ));
+                        process::exit(1);
                     }
-                } else if metadata.is_err() {
-                    log.info(&format!("writing  manifest {:#?}", img.name.clone()));
-                    fs::write(release_op_dir + "/manifest.json", manifest.clone())
-                        .expect("unable to write manifest.json file");
                 }
-            } else {
-                manifest = fs::read_to_string(release_op.clone()).expect("should read manifest");
             }
-
-            let op_manifest = parse_json_manifest_operator(manifest.clone()).unwrap();
-            let origin_tmp = img.from.name.split("@");
-            let origin = origin_tmp.clone().nth(0).unwrap();
-            let op_url = get_blobs_url_by_string(img.from.name.clone());
-
-            for layer in op_manifest.layers.unwrap().iter() {
-                // check for duplicates
-                if vec_common_blobs.contains(&layer.digest) {
-                    continue;
-                }
-                vec_common_blobs.push(layer.digest.clone());
-                // convert op_manifest.layer to FsLayer
-                let fslayer = FsLayer {
-                    blob_sum: layer.digest.clone(),
-                    original_ref: Some(origin.to_string()),
-                    size: Some(layer.size),
-                };
-                vec_flayer.insert(0, fslayer);
-            }
-            // add configs
-            let config = op_manifest.config.unwrap();
-            let cfg = FsLayer {
-                blob_sum: config.digest,
-                original_ref: Some(origin.to_string()),
-                size: Some(config.size),
-            };
-            vec_flayer.insert(0, cfg);
-            // finally add the fslayers to the hashmap
-            fslayers.insert(op_url.clone(), vec_flayer.clone());
-            log.trace(&format!("blobs_url {}", op_url));
-            log.trace(&format!("fslayer for {} {:#?}", img.name, fslayers));
         }
+    }
 
-        if dry_run {
-            let mut buf = String::from("");
-            for k in image_vec.iter() {
-                let src = &format!("{}{}", "docker://", k.to_string());
-                let idx = k.to_string().find("/").unwrap();
-                let s: &str = &k[idx..];
-                let dest = &format!("{}{}", "docker://localhost:5000", s.to_string());
-                buf = buf + &format!("{} = {}\n", src, dest);
+    image_ref_tracker.sort_by_key(|a| a.name.clone());
+    let serialized_manifest = serde_json::to_string(&image_ref_tracker.clone()).unwrap();
+    fs::write(
+        dir.clone() + &"/mirror-metadata/release-image-reference.json",
+        serialized_manifest,
+    )
+    .expect("should write image reference json");
+
+    if dry_run {
+        let mut buf = String::from("");
+        let data =
+            fs::read_to_string(dir.clone() + &"/mirror-metadata/release-image-reference.json");
+        if data.is_ok() {
+            let air = parse_json_metadata(data.unwrap());
+            if air.is_ok() {
+                for mii in air.unwrap().iter() {
+                    if mii.arch == "amd64" || mii.arch == "x86_64" {
+                        let src = &format!("{}{}", "docker://", mii.reference);
+                        let dest = &format!("{}{}@{}", "file://", mii.namespace, mii.digest);
+                        buf = buf + &format!("{}={}\n", src, dest);
+                    }
+                }
+                fs::write(dir.clone() + "/mappings/release-mapping.txt", buf)
+                    .expect("should write additional-mapping.txt file");
+                log.info(&format!(
+                    "created release mapping file in folder {}",
+                    dir.clone() + &"/mappings/",
+                ));
+            } else {
+                log.error(&format!(
+                    "parsing release metadata file {:#}",
+                    air.err().unwrap().to_string().to_lowercase()
+                ));
             }
-            fs::write(dir.clone() + "release-mapping.txt", buf)
-                .expect("should write release-mapping.txt file");
         } else {
-            // get blobs in batch of 8
-            // each future handles get_blobs api call
-            // with 8 threads (one per digest)
-            let mut futs = FuturesUnordered::new();
-            let batch_size = 8;
-            for (k, v) in fslayers.iter() {
-                // batch the calls
+            log.error(&format!(
+                "reading release metadata file {:#}",
+                data.err().unwrap().to_string().to_lowercase()
+            ));
+        }
+    } else {
+        // get blobs in batch of 8
+        // each future handles get_blobs api call
+        // with 8 threads (one per digest)
+        let mut futs = FuturesUnordered::new();
+        let batch_size = 8;
+        for (k, v) in fslayers.iter() {
+            // batch the calls
+            let hld = k.split("https://").nth(1).unwrap();
+            let registry = hld.split("/").nth(0).unwrap();
+            log.trace(&format!("url {}", k));
+            let token = get_token(log, registry.to_string()).await;
+            if token.is_ok() {
                 futs.push(reg_con.get_blobs(
                     log,
-                    blobs_dir.clone(),
+                    dir.clone() + "/blobs-store/",
                     k.to_string(),
                     token.as_ref().unwrap().to_string(),
                     v.clone(),
@@ -287,63 +597,28 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         response.unwrap()
                     ));
                 }
-            }
-            // Wait for the remaining to finish.
-            while let Some(response) = futs.next().await {
-                log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+            } else {
+                log.error(&format!(
+                    "token {:#}",
+                    token.err().unwrap().to_string().to_lowercase()
+                ));
             }
         }
-    }
-}
-
-pub async fn release_disk_to_mirror<T: RegistryInterface>(
-    reg_con: T,
-    log: &Logging,
-    dir: String,
-    destination_url: String,
-    releases: Vec<Release>,
-) -> String {
-    for release in releases {
-        let release_dir = dir.clone() + &get_dir_from_isc(release.image.clone());
-        log.debug(&format!("release directory {}", release_dir.clone()));
-        let manifests = get_all_assosciated_manifests(log, release_dir);
-        // using map and collect are not async
-        for mm in manifests.iter() {
-            // we can infer some info from the manifest
-            let binding = mm.to_string();
-            let manifest = get_release_manifest(binding.clone());
-            log.trace(&format!("manifest struct {:#?}", manifest));
-            log.trace(&format!("directory {}", binding));
-            let _res = reg_con
-                .push_image(
-                    log,
-                    dir.clone(),
-                    String::from("ocp-release"),
-                    destination_url.clone(),
-                    String::from(""),
-                    manifest.clone(),
-                )
-                .await;
+        // Wait for the remaining to finish.
+        while let Some(response) = futs.next().await {
+            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
         }
     }
-    String::from("ok")
 }
 
 // utility functions
 
-pub fn parse_op_url(url: String) -> ImageReference {
-    let mut tmp = url.split("v2");
-    let i_reg = tmp.nth(0).unwrap();
-    let i_ref = tmp.nth(0).unwrap();
-    let mut i = i_ref.split("/blobs/");
-
-    let ir = ImageReference {
-        registry: i_reg.split("https://").nth(1).unwrap().to_string(),
-        namespace: i.nth(0).unwrap().to_string(),
-        name: "".to_string(),
-        version: i.nth(0).unwrap().to_string(),
-    };
-    ir
+// get_sha_from_contents
+pub fn get_sha_from_contents(manifest_bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(manifest_bytes);
+    let hash_bytes = hasher.finalize();
+    encode(hash_bytes)
 }
 
 pub fn parse_json_release_imagereference(
@@ -354,17 +629,6 @@ pub fn parse_json_release_imagereference(
     // Parse the string of data into ReleaseSchema
     let root: ReleaseSchema = serde_json::from_str(&data)?;
     Ok(root)
-}
-
-fn get_dir_from_isc(release: String) -> String {
-    let res = release.split("/");
-    let collection = res.clone().collect::<Vec<&str>>();
-    let name = collection[2].split(":");
-    let result = name.clone().nth(0).unwrap().to_string()
-        + "/"
-        + name.clone().nth(1).unwrap()
-        + &"/release/";
-    result
 }
 
 // parse_release_image_index - best attempt to parse image index and return catalog reference
@@ -383,67 +647,6 @@ pub fn convert_release_image_index(log: &Logging, release: String) -> ImageRefer
     };
     log.trace(&format!("image reference {:#?}", ir));
     ir
-}
-
-// contruct the manifest url
-pub fn get_image_manifest_url(image_ref: ImageReference) -> String {
-    // return a string in the form of (example below)
-    // "https://registry.redhat.io/v2/redhat/certified-operator-index/manifests/v4.12";
-    let mut url = String::from("https://");
-    url.push_str(&image_ref.registry);
-    url.push_str(&"/v2/");
-    url.push_str(&image_ref.namespace);
-    url.push_str(&"/");
-    url.push_str(&image_ref.name);
-    url.push_str(&"/");
-    url.push_str(&"manifests/");
-    url.push_str(&image_ref.version);
-    url
-}
-
-// contruct a manifest url from a string
-pub fn get_manifest_url(url: String) -> String {
-    let mut parts = url.split("/");
-    let mut url = String::from("https://");
-    url.push_str(&parts.nth(0).unwrap());
-    url.push_str(&"/v2/");
-    url.push_str(&parts.nth(0).unwrap());
-    url.push_str(&"/");
-    let i = parts.nth(0).unwrap();
-    let mut sha = i.split("@");
-    url.push_str(&sha.nth(0).unwrap());
-    url.push_str(&"/");
-    url.push_str(&"manifests/");
-    url.push_str(&sha.nth(0).unwrap());
-    url
-}
-
-pub fn parse_json_manifest_operator(data: String) -> Result<Manifest, Box<dyn std::error::Error>> {
-    // Parse the string of data into serde_json::Manifest.
-    let root: Manifest = serde_json::from_str(&data)?;
-    Ok(root)
-}
-
-pub fn get_all_assosciated_manifests(log: &Logging, dir: String) -> Vec<String> {
-    let mut vec_manifests: Vec<String> = vec![];
-    let result = WalkDir::new(&dir);
-    for file in result.into_iter().filter_map(|file| file.ok()) {
-        if file.metadata().unwrap().is_file() & !file.path().display().to_string().contains("list")
-        {
-            log.debug(&format!(
-                "assosciated manifest found {:#?}",
-                file.path().display().to_string()
-            ));
-            vec_manifests.insert(0, file.path().display().to_string());
-        }
-    }
-    vec_manifests
-}
-
-fn get_release_manifest(dir: String) -> Manifest {
-    let data = fs::read_to_string(&dir).expect("should read release-operator-manifest json file");
-    let release_manifest = parse_json_manifest_operator(data).unwrap();
-    release_manifest
 }
 
 #[cfg(test)]
