@@ -44,7 +44,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
-    _skip_manifests_check: bool,
+    skip_manifests_check: bool,
     dry_run: bool,
     operators: Vec<Operator>,
 ) {
@@ -314,27 +314,44 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         for ri in related_images.iter() {
                             image_vec.insert(0, ri.image.clone());
                             let ir_pkg = parse_url(log, ri.image.clone());
-                            let url = &format!(
-                                "https://{}/v2/{}/{}/manifests/{}",
-                                ir_pkg.registry, ir_pkg.namespace, ir_pkg.name, ir_pkg.version
-                            );
+                            let mut manifest: String = String::new();
+                            if skip_manifests_check {
+                                let url = &format!(
+                                    "https://{}/v2/{}/{}/manifests/{}",
+                                    ir_pkg.registry, ir_pkg.namespace, ir_pkg.name, ir_pkg.version
+                                );
 
-                            log.ex(&format!(
-                                "checking manifest {:#?}",
-                                ir_pkg.namespace.clone() + "/" + &ir_pkg.name
-                            ));
+                                log.ex(&format!(
+                                    "checking manifest {:#?}",
+                                    ir_pkg.namespace.clone() + "/" + &ir_pkg.name
+                                ));
 
-                            let manifest = reg_con
-                                .get_manifest(url.clone(), token.as_ref().unwrap().to_string())
-                                .await;
-
-                            log.trace(&format!("manifest {:#?}", manifest));
+                                let res = reg_con
+                                    .get_manifest(url.clone(), token.as_ref().unwrap().to_string())
+                                    .await;
+                                if res.is_ok() {
+                                    manifest = res.unwrap().clone();
+                                    let f = &format!(
+                                        "{}/manifests/operator/{}-list.json",
+                                        dir.clone(),
+                                        ir_pkg.version.clone()
+                                    );
+                                    fs::write(f, manifest.clone()).expect("unable to write file");
+                                }
+                            } else {
+                                let manifest_file = format!(
+                                    "{}/manifests/{}-list.json",
+                                    dir.clone(),
+                                    ir_pkg.version
+                                );
+                                manifest = fs::read_to_string(manifest_file)
+                                    .expect("should read manifest list");
+                            }
 
                             // check to see if the manifest on disk (operator-rerence-image exists
                             // and has not changed)
                             // check for manifest list first
-                            let manifest_list =
-                                parse_json_manifestlist(manifest.as_ref().unwrap().clone());
+                            let manifest_list = parse_json_manifestlist(manifest.clone());
                             log.trace(&format!("manifest list {:#?}", manifest_list));
                             let mut fslayers: Vec<FsLayer> = Vec::new();
                             if manifest_list.is_ok() {
@@ -343,16 +360,10 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 if ml.media_type
                                     == "application/vnd.docker.distribution.manifest.list.v2+json"
                                 {
-                                    let digest = get_sha_from_contents(
-                                        manifest.as_ref().unwrap().as_bytes(),
-                                    );
-                                    let f = &format!(
-                                        "{}/manifests/operator/sha256:{}-list.json",
-                                        dir.clone(),
-                                        digest.clone()
-                                    );
-                                    fs::write(f, manifest.unwrap().clone())
-                                        .expect("unable to write file");
+                                    let digest = get_sha_from_contents(manifest.clone().as_bytes());
+                                    if digest != ir_pkg.version {
+                                        log.warn(&format!("digest does not match {}", digest));
+                                    }
                                     let img_ref = MirrorImageInfo {
                                         reference: ir.name.clone() + &"/" + &ir.version,
                                         name: pkg.name.clone(),
@@ -370,84 +381,83 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     // loop through each manifest
                                     for mf in ml.manifests.iter() {
                                         let arch_img = parse_image(log, ri.image.clone());
-                                        let arch_mnfst_url = format!(
-                                            "https://{}/v2/{}/{}/manifests/{}",
-                                            arch_img.registry,
-                                            arch_img.namespace,
-                                            arch_img.name,
-                                            mf.digest.as_ref().unwrap()
+                                        let f = &format!(
+                                            "{}/manifests/operator/{}-{}.json",
+                                            dir.clone(),
+                                            mf.digest.as_ref().unwrap(),
+                                            mf.platform.clone().unwrap().architecture,
                                         );
-
-                                        log.debug(&format!(
-                                            "arch manifest url {:#?}",
-                                            arch_mnfst_url.clone()
-                                        ));
-                                        // use the RegistryInterface to make the api call
-                                        let local_manifest = reg_con
-                                            .get_manifest(
-                                                arch_mnfst_url.clone(),
-                                                token.as_ref().unwrap().to_string(),
-                                            )
-                                            .await;
-                                        if local_manifest.is_ok() {
-                                            let f = &format!(
-                                                "{}/manifests/operator/{}-{}.json",
-                                                dir.clone(),
-                                                mf.digest.as_ref().unwrap(),
-                                                mf.platform.clone().unwrap().architecture,
-                                            );
-                                            // remove registry from related image
-                                            let img_ref = MirrorImageInfo {
-                                                reference: ir.name.clone() + &"/" + &ir.version,
-                                                name: ri.name.clone(),
-                                                arch: mf.platform.clone().unwrap().architecture,
-                                                tag: Some("".to_string()),
-                                                namespace: arch_img.namespace
-                                                    + &"/"
-                                                    + &arch_img.name,
-                                                digest: mf.digest.as_ref().unwrap().to_string(),
-                                                manifest_type: "manifest".to_string(),
-                                                created: "".to_string(),
-                                                mirror_type: "operator".to_string(),
-                                                bundle: Some(bundle_name.clone()),
-                                            };
-                                            image_ref_tracker.insert(0, img_ref.clone());
-
-                                            fs::write(f, local_manifest.as_ref().unwrap())
-                                                .expect("unable to write file");
-                                            // convert op_manifest.layer to FsLayer and add it to the collection
-                                            let op_manifest = parse_json_manifest_operator(
-                                                local_manifest.as_ref().unwrap().to_string(),
+                                        let mut local_manifest: String = String::new();
+                                        if !skip_manifests_check {
+                                            let arch_mnfst_url = format!(
+                                                "https://{}/v2/{}/{}/manifests/{}",
+                                                arch_img.registry,
+                                                arch_img.namespace,
+                                                arch_img.name,
+                                                mf.digest.as_ref().unwrap()
                                             );
 
-                                            if op_manifest.is_ok() {
-                                                // changed to ensure no duplicates included using for..in
-                                                let l = op_manifest.as_ref().unwrap().clone();
-                                                for layer in l.layers.unwrap().iter() {
-                                                    let fslayer = FsLayer {
-                                                        blob_sum: layer.digest.clone(),
-                                                        original_ref: Some(ri.image.clone()),
-                                                        size: Some(layer.size),
-                                                    };
-                                                    fslayers.insert(0, fslayer);
-                                                }
-                                                let config = op_manifest.unwrap().config.unwrap();
-                                                let cfg = FsLayer {
-                                                    blob_sum: config.digest.clone(),
-                                                    original_ref: Some(ri.image.clone()),
-                                                    size: Some(config.size),
-                                                };
-                                                fslayers.insert(0, cfg);
-                                            } else {
-                                                log.error(&format!(
-                                                    "{:#?}",
-                                                    op_manifest.err().unwrap()
-                                                ));
+                                            log.debug(&format!(
+                                                "arch manifest url {:#?}",
+                                                arch_mnfst_url.clone()
+                                            ));
+                                            // use the RegistryInterface to make the api call
+                                            let res = reg_con
+                                                .get_manifest(
+                                                    arch_mnfst_url.clone(),
+                                                    token.as_ref().unwrap().to_string(),
+                                                )
+                                                .await;
+                                            if res.is_ok() {
+                                                fs::write(f, res.as_ref().unwrap())
+                                                    .expect("unable to write arch manifest file");
+                                                local_manifest = res.unwrap();
                                             }
+                                        } else {
+                                            local_manifest = fs::read_to_string(f)
+                                                .expect("should read local arch manifest file");
+                                        }
+                                        // remove registry from related image
+                                        let img_ref = MirrorImageInfo {
+                                            reference: ir.name.clone() + &"/" + &ir.version,
+                                            name: ri.name.clone(),
+                                            arch: mf.platform.clone().unwrap().architecture,
+                                            tag: Some("".to_string()),
+                                            namespace: arch_img.namespace + &"/" + &arch_img.name,
+                                            digest: mf.digest.as_ref().unwrap().to_string(),
+                                            manifest_type: "manifest".to_string(),
+                                            created: "".to_string(),
+                                            mirror_type: "operator".to_string(),
+                                            bundle: Some(bundle_name.clone()),
+                                        };
+                                        image_ref_tracker.insert(0, img_ref.clone());
+
+                                        // convert op_manifest.layer to FsLayer and add it to the collection
+                                        let op_manifest =
+                                            parse_json_manifest_operator(local_manifest.clone());
+
+                                        if op_manifest.is_ok() {
+                                            // changed to ensure no duplicates included using for..in
+                                            let l = op_manifest.as_ref().unwrap().clone();
+                                            for layer in l.layers.unwrap().iter() {
+                                                let fslayer = FsLayer {
+                                                    blob_sum: layer.digest.clone(),
+                                                    original_ref: Some(ri.image.clone()),
+                                                    size: Some(layer.size),
+                                                };
+                                                fslayers.insert(0, fslayer);
+                                            }
+                                            let config = op_manifest.unwrap().config.unwrap();
+                                            let cfg = FsLayer {
+                                                blob_sum: config.digest.clone(),
+                                                original_ref: Some(ri.image.clone()),
+                                                size: Some(config.size),
+                                            };
+                                            fslayers.insert(0, cfg);
                                         } else {
                                             log.error(&format!(
                                                 "{:#?}",
-                                                local_manifest.err().unwrap(),
+                                                op_manifest.err().unwrap()
                                             ));
                                         }
                                     }
@@ -455,21 +465,17 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                             } else {
                                 // handle manifest's here, typically in a package
                                 // bundles are manifests and not multiarch (set in manifestlist)
-                                let op_manifest = parse_json_manifest_operator(
-                                    manifest.as_ref().unwrap().to_string(),
-                                );
+                                let op_manifest = parse_json_manifest_operator(manifest.clone());
                                 if op_manifest.is_ok() {
                                     let op_mnfst = op_manifest.unwrap();
                                     log.debug(&format!(
                                         "op_manifest {:#?} {:#?}",
                                         op_mnfst, ir_pkg.name
                                     ));
-                                    let digest = get_sha_from_contents(
-                                        manifest.as_ref().unwrap().as_bytes(),
-                                    );
+                                    let digest = get_sha_from_contents(manifest.clone().as_bytes());
                                     if digest != ir_pkg.version.split(":").nth(1).unwrap() {
                                         log.warn(&format!(
-                                            "digest and file sha does not match {} : {}",
+                                            "digest does not match {} : {}",
                                             ir_pkg.name, digest
                                         ));
                                     }
@@ -479,8 +485,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                         ir_pkg.version,
                                         "all".to_string()
                                     );
-                                    fs::write(f, manifest.unwrap().clone())
-                                        .expect("unable to write file");
+                                    fs::write(f, manifest.clone()).expect("unable to write file");
                                     let img_ref = MirrorImageInfo {
                                         reference: ir.name.clone() + &"/" + &ir.version,
                                         name: pkg.name.clone(),

@@ -19,7 +19,7 @@ pub fn create_tar(log: &Logging, base_dir: String) -> Result<bool, MirrorError> 
     fs::create_dir_all(manifest_dir.path().join("release")).expect("should create release folder");
 
     let metadata_files: Vec<&str> = vec![
-        "operators-image-reference.json",
+        "operator-image-reference.json",
         "release-image-reference.json",
         "additional-image-reference.json",
     ];

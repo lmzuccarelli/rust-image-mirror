@@ -59,22 +59,32 @@ async fn main() {
     log.debug(&format!("image-mirror config file {} ", cfg));
 
     // Parse the config serde_yaml::ImageSetConfiguration.
-    let config = load_config(cfg).unwrap();
-    let isc_config = parse_yaml_config(config.clone()).unwrap();
+    let config = load_config(cfg);
+    if config.is_err() {
+        log.error(&format!("{:#}", config.err().unwrap().to_string()));
+        process::exit(1);
+    }
+    let isc_config = parse_yaml_config(config.unwrap());
+    if isc_config.is_err() {
+        log.error(&format!("{:#}", isc_config.err().unwrap().to_string()));
+        process::exit(1);
+    }
+
+    let isc_config_final = isc_config.unwrap();
 
     log.debug(&format!(
         "image set config releases {:#?}",
-        isc_config.mirror.release
+        isc_config_final.mirror.release
     ));
 
     log.debug(&format!(
         "image set config operators {:#?}",
-        isc_config.mirror.operators
+        isc_config_final.mirror.operators
     ));
 
     log.debug(&format!(
         "image set config additional images {:#?}",
-        isc_config.mirror.additional_images
+        isc_config_final.mirror.additional_images
     ));
 
     // initialize the client request interface
@@ -95,40 +105,40 @@ async fn main() {
 
         // check for release images
         let skip_manifest_check = skip_manifests == "release" || skip_manifests == "all";
-        if isc_config.mirror.release.is_some() {
+        if isc_config_final.mirror.release.is_some() {
             release_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
                 skip_manifest_check,
                 dry_run,
-                isc_config.mirror.release.unwrap(),
+                isc_config_final.mirror.release.unwrap(),
             )
             .await;
         }
         // check for operators
         let skip_manifest_check = skip_manifests == "operators" || skip_manifests == "all";
-        if isc_config.mirror.operators.is_some() {
+        if isc_config_final.mirror.operators.is_some() {
             operator_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
                 skip_manifest_check,
                 dry_run,
-                isc_config.mirror.operators.unwrap(),
+                isc_config_final.mirror.operators.unwrap(),
             )
             .await;
         }
         // check for additional images
-        let skip_manifest_check = skip_manifests == "additional";
-        if isc_config.mirror.additional_images.is_some() {
+        let skip_manifest_check = skip_manifests == "additional" || skip_manifests == "all";
+        if isc_config_final.mirror.additional_images.is_some() {
             additional_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
                 skip_manifest_check,
                 dry_run,
-                isc_config.mirror.additional_images.unwrap(),
+                isc_config_final.mirror.additional_images.unwrap(),
             )
             .await;
         }

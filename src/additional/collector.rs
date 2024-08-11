@@ -5,7 +5,6 @@ use mirror_auth::*;
 use mirror_copy::{parse_json_manifest_operator, *};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::process;
 
 use crate::api::schema::MirrorImageInfo;
@@ -17,7 +16,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
     reg_con: T,
     log: &Logging,
     dir: String,
-    _skip_manifests_check: bool,
+    skip_manifests_check: bool,
     dry_run: bool,
     additional: Vec<Image>,
 ) {
@@ -51,6 +50,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
         ))
         .expect("should create manifests directory");
 
+        let mut manifest_list: String = String::new();
         let working_dir_cache = format!("{}/manifests/additional", dir.clone());
         let mflist_file = format!(
             "{}/{}-{}.json",
@@ -58,76 +58,68 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             image.name.clone().replace("/", "-"),
             "list"
         );
-        log.ex(&format!(
-            "checking manifest {:#}",
-            ir.registry.clone() + &"/" + &ir.namespace.clone() + "/" + &ir.name.clone()
-        ));
-        let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
-            .await;
+        if !skip_manifests_check {
+            log.ex(&format!(
+                "api call : checking manifest list {:#}",
+                ir.registry.clone() + &"/" + &ir.namespace.clone() + "/" + &ir.name.clone()
+            ));
+            let res = reg_con
+                .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
+                .await;
 
-        // manifest check
-        if manifest.is_ok() {
-            let mem_manifest_list = manifest.as_ref().unwrap().clone();
-            let res_manifest_list_mem = parse_json_manifestlist(mem_manifest_list.clone());
-            if res_manifest_list_mem.is_ok() {
-                let ml = res_manifest_list_mem.unwrap();
-                let cache_exists = Path::new(&mflist_file).exists();
-                let mut exists = true;
-                if cache_exists {
-                    let manifest_list_on_disk = fs::read_to_string(mflist_file.clone()).unwrap();
-                    let res_manifest_on_disk =
-                        parse_json_manifestlist(manifest_list_on_disk).unwrap();
-                    if res_manifest_on_disk != ml.clone() {
-                        exists = false;
-                    }
-                } else {
-                    exists = false;
-                }
-                if !exists {
-                    log.info("detected change in manifest list");
-                    // write manifestlist to disk
-                    fs::write(&mflist_file, mem_manifest_list).expect("write manifest list");
-                    for m in ml.clone().manifests.iter() {
-                        let mut ir_url = ir.clone();
-                        let arch = m.platform.as_ref().unwrap().architecture.to_string();
-                        ir_url.version = m.digest.as_ref().unwrap().to_string();
-                        let mnfst_url = format!(
-                            "https://{}/v2/{}/{}/manifests/{}",
-                            ir_url.registry, ir_url.namespace, ir_url.name, ir_url.version
-                        );
-                        let arch_manifest = reg_con
-                            .get_manifest(mnfst_url.clone(), token.as_ref().unwrap().clone())
-                            .await;
+            // manifest check
+            if res.is_ok() {
+                // write manifestlist to disk
+                fs::write(&mflist_file, res.as_ref().unwrap()).expect("write manifest list");
+                manifest_list = res.unwrap();
+            }
+        } else {
+            manifest_list =
+                fs::read_to_string(mflist_file.clone()).expect("should read manifest list");
+        }
 
-                        if arch_manifest.is_ok() {
-                            let arch_manifest_json = format!(
-                                "{}/manifests/additional/{}-{}.json",
-                                dir.clone(),
-                                ir_url.version.clone(),
-                                arch.clone(),
-                            );
-                            let local_arch_manifest = arch_manifest.unwrap();
-                            let mnfst = parse_json_manifest_operator(local_arch_manifest.clone());
-                            if mnfst.is_ok() {
-                                fs::write(arch_manifest_json.clone(), local_arch_manifest.clone())
-                                    .expect("unable to write manifest.json file");
-                            }
-                        } else {
-                            log.error(&format!(
-                                "api call getting manifest for architecture {} {:#}",
-                                arch.clone(),
-                                arch_manifest.err().unwrap().to_string().to_lowercase()
-                            ));
-                        }
+        let mem_manifest_list = manifest_list.clone();
+        let ml = parse_json_manifestlist(mem_manifest_list.clone());
+        if ml.is_ok() {
+            for m in ml.unwrap().manifests.iter() {
+                let mut ir_url = ir.clone();
+                let arch = m.platform.as_ref().unwrap().architecture.to_string();
+                ir_url.version = m.digest.as_ref().unwrap().to_string();
+
+                let arch_manifest_json = format!(
+                    "{}/manifests/additional/{}-{}.json",
+                    dir.clone(),
+                    ir_url.version.clone(),
+                    arch.clone(),
+                );
+
+                if !skip_manifests_check {
+                    log.ex(&format!(
+                        "api call : checking arch manifest {:#}",
+                        ir_url.registry.clone()
+                            + &"/"
+                            + &ir_url.namespace.clone()
+                            + "/"
+                            + &ir_url.name.clone()
+                    ));
+                    let mnfst_url = format!(
+                        "https://{}/v2/{}/{}/manifests/{}",
+                        ir_url.registry, ir_url.namespace, ir_url.name, ir_url.version
+                    );
+                    let res = reg_con
+                        .get_manifest(mnfst_url.clone(), token.as_ref().unwrap().clone())
+                        .await;
+                    if res.is_ok() {
+                        fs::write(arch_manifest_json.clone(), res.as_ref().unwrap())
+                            .expect("unable to write manifest.json file");
+                    } else {
+                        log.error(&format!(
+                            "api call for arch manifest {:?}",
+                            res.err().unwrap().to_string().to_lowercase()
+                        ));
                     }
                 }
             }
-        } else {
-            log.error(&format!(
-                "api call geting manifest {:#}",
-                manifest.err().unwrap().to_string().to_lowercase()
-            ));
         }
 
         // at this stage we are confident all manifests are on disk (cache)

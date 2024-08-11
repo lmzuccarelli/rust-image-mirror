@@ -408,7 +408,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                         token.as_ref().unwrap().to_string(),
                                     )
                                     .await;
-                                log.ex(&format!("checking manifest {:#?}", img.name));
+                                log.ex(&format!("api call : checking manifest {:#?}", img.name));
 
                                 if res_manifest.is_ok() {
                                     let manifest = res_manifest.unwrap();
@@ -458,8 +458,8 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             // file is correct and parsable
                             let md = fs::read_to_string(mnfst_on_disk.clone());
                             if md.is_ok() {
-                                log.debug(&format!(
-                                    "verifying manifest {} [{}]",
+                                log.ex(&format!(
+                                    "checking manifest {} [{}]",
                                     img.name, image_ref.version
                                 ));
                                 let op_manifest =
