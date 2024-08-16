@@ -11,9 +11,6 @@ build-debug:
 	cargo build
 
 build:
-	# used for production release
-	# cleanup all debug artifacts
-	rm -rf ./target/debug
 	cargo build --release
 
 test: clean
@@ -35,6 +32,7 @@ run-m2d:
 clean-all:
 	rm -rf cargo-test*
 	cargo clean
+	rm -rf ./target/debug
 
 clean-tests:
 	rm -rf cargo-test*

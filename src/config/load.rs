@@ -18,7 +18,7 @@ pub struct ImageSetConfig {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Mirror {
     #[serde(rename = "release")]
-    pub release: Option<Vec<Release>>,
+    pub release: Option<Release>,
 
     #[serde(rename = "operators")]
     pub operators: Option<Vec<Operator>>,
@@ -27,7 +27,7 @@ pub struct Mirror {
     pub additional_images: Option<Vec<Image>>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Image {
     #[serde(rename = "name")]
     pub name: String,
@@ -59,11 +59,11 @@ pub struct Bundle {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Release {
-    #[serde(rename = "version")]
-    pub version: String,
+    #[serde(rename = "graph")]
+    pub graph: Option<String>,
 
-    #[serde(rename = "image")]
-    pub image: String,
+    #[serde(rename = "images")]
+    pub images: Vec<Image>,
 }
 
 // read the 'image set config' file

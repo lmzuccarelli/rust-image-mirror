@@ -19,9 +19,9 @@ pub fn create_tar(log: &Logging, base_dir: String) -> Result<bool, MirrorError> 
     fs::create_dir_all(manifest_dir.path().join("release")).expect("should create release folder");
 
     let metadata_files: Vec<&str> = vec![
-        "operator-image-reference.json",
         "release-image-reference.json",
         "additional-image-reference.json",
+        "operator-image-reference.json",
     ];
 
     for file in metadata_files.iter() {
@@ -36,13 +36,20 @@ pub fn create_tar(log: &Logging, base_dir: String) -> Result<bool, MirrorError> 
                 if img.manifest_type == "manifest"
                     && (img.arch == "amd64" || img.arch == "x86_64" || img.arch == "all")
                 {
+                    let td: String;
+                    if img.tag.is_some() && img.digest.len() == 0 {
+                        td = format!("{}:{}", img.name.clone(), img.tag.as_ref().unwrap());
+                    } else {
+                        td = img.digest.clone();
+                    }
                     let manifest_file = format!(
                         "{}/manifests/{}/{}-{}.json",
                         base_dir.clone(),
                         img.mirror_type,
-                        img.digest,
+                        td,
                         img.arch
                     );
+                    log.info(&format!("manifest_file {}", manifest_file));
                     log.info(&format!("processing image {:#?}", img.name));
                     let m_data = fs::read_to_string(manifest_file.clone())
                         .expect("should read manifest file");
@@ -96,7 +103,13 @@ pub fn create_tar(log: &Logging, base_dir: String) -> Result<bool, MirrorError> 
                             let to = format!("{}/{}/digest/", img.mirror_type, img.namespace);
                             let to_dir = manifest_dir.path().join(to.clone());
                             fs::create_dir_all(to_dir.clone()).expect("create dest dir");
-                            let to_file = format!("{}-{}.json", img.digest, img.arch);
+                            let to_file: String;
+                            if img.tag.is_some() {
+                                to_file =
+                                    format!("{}-{}.json", img.tag.as_ref().unwrap(), img.arch);
+                            } else {
+                                to_file = format!("{}-{}.json", img.digest, img.arch);
+                            }
                             let res = fs::copy(manifest_file.clone(), to_dir.join(to_file));
                             if res.is_err() {
                                 let msg = &format!(
@@ -124,26 +137,45 @@ pub fn create_tar(log: &Logging, base_dir: String) -> Result<bool, MirrorError> 
         "building blob archive with size :    {:#?}",
         fs_extra::dir::get_size(blobs_dir).unwrap()
     ));
+
     // create the tars
-    let tar_blobs = File::create(base_dir.clone() + &"/mirror-blobs.tar".to_string()).unwrap();
-    let mut tar = tar::Builder::new(tar_blobs);
+    fs::create_dir_all(base_dir.clone() + &"/artifacts")
+        .expect("should create artifacts directory");
+    let tar_blobs =
+        File::create(base_dir.clone() + &"/artifacts/mirror-blobs.tar".to_string()).unwrap();
+    let mut tar_b = tar::Builder::new(tar_blobs);
     // add all the contents to the blobs
-    tar.append_dir_all(".", tmp_blobs_dir.as_ref().unwrap().path())
+    tar_b
+        .append_dir_all(".", tmp_blobs_dir.as_ref().unwrap().path())
         .unwrap();
-    tar.finish().expect("should flush contents");
+    tar_b.finish().expect("should flush blob contents");
     tmp_blobs_dir.unwrap().close().unwrap();
 
-    let tar_manifest = File::create(base_dir + &"/mirror-manifests.tar".to_string()).unwrap();
-    let mut tar = tar::Builder::new(tar_manifest);
+    let tar_manifest =
+        File::create(base_dir.clone() + &"/artifacts/mirror-manifests.tar".to_string()).unwrap();
+    let mut tar_m = tar::Builder::new(tar_manifest);
 
     log.ex(&format!(
         "building manifest archive with size : {:#?}",
         fs_extra::dir::get_size(manifest_dir).unwrap()
     ));
 
-    tar.append_dir_all(".", manifest_dir.path()).unwrap();
-    tar.finish().expect("should flush contents");
+    tar_m.append_dir_all(".", manifest_dir.path()).unwrap();
+    tar_m.finish().expect("should flush manifest contents");
     tmp_manifest_dir.unwrap().close().unwrap();
+
+    let tar_meta =
+        File::create(base_dir.clone() + &"/artifacts/mirror-metadata.tar".to_string()).unwrap();
+    let mut tar_md = tar::Builder::new(tar_meta);
+
+    let src_dir = format!("{}/{}", base_dir.clone(), "mirror-metadata");
+    log.ex(&format!(
+        "building metadata archive with size : {:#?}",
+        fs_extra::dir::get_size(src_dir.clone()).unwrap()
+    ));
+
+    tar_md.append_dir_all(".", src_dir.clone()).unwrap();
+    tar_m.finish().expect("should flush metadata contents");
 
     Ok(true)
 }

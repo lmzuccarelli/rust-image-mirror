@@ -1,7 +1,8 @@
 use crate::api::schema::MirrorImageInfo;
 use crate::config::load::*;
+use crate::graphdata::process::GraphDataInterface;
+use crate::graphdata::process::ImplGraphDataInterface;
 use crate::image::utils::*;
-use crate::parse_json_manifestlist;
 use chrono::{DateTime, Local};
 use custom_logger::*;
 use futures::stream::FuturesUnordered;
@@ -9,7 +10,6 @@ use futures::stream::StreamExt;
 use hex::encode;
 use mirror_auth::*;
 use mirror_catalog_index::*;
-use mirror_copy::parse_json_manifest_operator;
 use mirror_copy::*;
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -84,7 +84,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     dir: String,
     skip_manifests_check: bool,
     dry_run: bool,
-    releases: Vec<Release>,
+    releases: Release,
 ) {
     log.hi("release collector mode: mirror-to-disk");
 
@@ -101,9 +101,9 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
 
     // parse the config
-    for release in releases.iter() {
+    for release in releases.images.iter() {
         // parse image index
-        let index_image_ref = convert_release_image_index(log, release.image.clone());
+        let index_image_ref = convert_release_image_index(log, release.name.clone());
         log.debug(&format!("image refs {:#?}", index_image_ref.clone()));
         let token = get_token(log, index_image_ref.clone().registry).await;
         if token.is_err() {
@@ -121,7 +121,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             index_image_ref.name,
             index_image_ref.version
         );
-        log.info(&format!("checking manifest for {}", release.image.clone()));
+        log.mid(&format!("api call for manifest {}", release.name.clone()));
 
         let manifest = reg_con
             .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
@@ -131,7 +131,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             // multi arch
             // in the cli ensure that only multi is entered
             // and no other platform architecture
-            if release.image.clone().contains("multi") {
+            if release.name.clone().contains("multi") {
                 let manifest_list = parse_json_manifestlist(manifest.unwrap().clone());
                 if manifest_list.is_ok() {
                     for mfst in manifest_list.unwrap().manifests.iter() {
@@ -145,12 +145,12 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         );
                         log.info(&format!(
                             "checking multi arch manifest for {}",
-                            release.image.clone() + "/" + mfst.digest.as_ref().unwrap()
+                            release.name.clone() + "/" + mfst.digest.as_ref().unwrap()
                         ));
 
                         let original_ref = format!(
                             "{}-{}",
-                            release.image.clone().split("-multi").nth(0).unwrap(),
+                            release.name.clone().split("-multi").nth(0).unwrap(),
                             mfst.platform.as_ref().unwrap().architecture
                         );
 
@@ -227,7 +227,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 .expect("should write manifest file");
                             let release_image_info = ReleaseImageInfo {
                                 file: mfst_file.clone(),
-                                original_ref: release.image.clone(),
+                                original_ref: release.name.clone(),
                             };
                             vec_process_manifests.insert(0, release_image_info);
                         }
@@ -237,7 +237,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         .expect("should write manifest file");
                     let release_image_info = ReleaseImageInfo {
                         file: mfst_file.clone(),
-                        original_ref: release.image.clone(),
+                        original_ref: release.name.clone(),
                     };
                     vec_process_manifests.insert(0, release_image_info);
                 }
@@ -363,7 +363,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 
         // find the directory 'release-manifests'
         // use the release image version (before the "-") to match
-        let release_version = release.image.split(":").nth(1).unwrap();
+        let release_version = release.name.split(":").nth(1).unwrap();
         let version = release_version.split("-").nth(0).unwrap();
         let arch = release_version.split("-").nth(1).unwrap();
 
@@ -408,7 +408,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                         token.as_ref().unwrap().to_string(),
                                     )
                                     .await;
-                                log.ex(&format!("api call : checking manifest {:#?}", img.name));
+                                log.mid(&format!("api call for manifest {:#?}", img.name));
 
                                 if res_manifest.is_ok() {
                                     let manifest = res_manifest.unwrap();
@@ -458,10 +458,8 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             // file is correct and parsable
                             let md = fs::read_to_string(mnfst_on_disk.clone());
                             if md.is_ok() {
-                                log.ex(&format!(
-                                    "checking manifest {} [{}]",
-                                    img.name, image_ref.version
-                                ));
+                                log.ex(&format!("checking manifest {}", img.name));
+                                log.debug(&format!("sha {} ", image_ref.version));
                                 let op_manifest =
                                     parse_json_manifest_operator(md.unwrap()).unwrap();
 
@@ -526,6 +524,38 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     }
                 }
             }
+        }
+    }
+
+    if releases.graph.is_some() {
+        if releases.graph.unwrap().contains("true") {
+            log.info("build graph data");
+
+            let g_impl = ImplGraphDataInterface {};
+            let res = g_impl.build_graph_image(log, dir.clone()).await;
+            if res.is_ok() {
+                let p_fbi = process_fb_image(
+                    dir.clone(),
+                    "graph-image".to_string(),
+                    "openshift/graph-image".to_string(),
+                    "latest".to_string(),
+                    "release".to_string(),
+                );
+                if p_fbi.is_ok() {
+                    image_ref_tracker.append(&mut p_fbi.unwrap());
+                } else {
+                    log.error(&format!(
+                        "{}",
+                        p_fbi.err().unwrap().to_string().to_lowercase()
+                    ));
+                }
+            } else {
+                log.error(&format!(
+                    "reading tar file {}",
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+            }
+            g_impl.build_image_cleanup().await;
         }
     }
 

@@ -11,15 +11,40 @@ use std::fs::{self};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::process;
+use std::thread::{sleep, spawn};
+use std::time::Duration;
 use tar::Archive;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+
+// used to drive a spinner
+pub mod keepalive {
+    use std::sync::{Arc, Weak};
+
+    pub struct Sender(Arc<()>);
+
+    #[derive(Clone)]
+    pub struct Receiver(Weak<()>);
+
+    pub fn channel() -> (Sender, Receiver) {
+        let arc = Arc::new(());
+        let weak = Arc::downgrade(&arc);
+        (Sender(arc), Receiver(weak))
+    }
+
+    impl Receiver {
+        pub fn is_alive(&self) -> bool {
+            Weak::strong_count(&self.0) > 0
+        }
+    }
+}
 
 pub async fn removable_media_disk_to_mirror(
     log: &Logging,
     from: String,
     destination: String,
     skip_blobs: bool,
+    skip_verify: bool,
 ) {
     // open the blobs tar
     log.hi("removable media collector mode: disk-to-mirror");
@@ -27,24 +52,42 @@ pub async fn removable_media_disk_to_mirror(
     if !skip_blobs {
         let data = std::fs::File::open(from.clone() + &"/mirror-blobs.tar".to_string());
         if data.is_ok() {
+            //let mut archive_count = Archive::new(data.as_ref().unwrap());
+            //let count = archive_count.entries().unwrap().enumerate().count();
             let mut archive = Archive::new(data.unwrap());
-            for (_i, file) in archive.entries().unwrap().enumerate() {
+            //log.lo(&format!("found {} blobs to process", count));
+            for (i, file) in archive.entries().unwrap().enumerate() {
                 let mut x = file.unwrap();
                 let f = x.path().unwrap();
                 let op_path = f.as_ref().to_string_lossy().to_string();
                 if op_path.clone().contains("/blob/") {
                     let path = op_path.split("/blob/").nth(0).unwrap();
                     let digest = op_path.split("/blob/").nth(1).unwrap();
-                    log.info(&format!("components are {} {}", path, digest));
+                    log.debug(&format!("components are {} {}", path, digest));
                     let res = x.unpack("tmp-store/".to_string() + digest);
                     if res.is_err() {
                         log.error(&format!("{:?}", res.err().unwrap()));
                         continue;
                     }
+                    log.ex(&format!("  pushing blob ({:0>3}) {}", i, digest));
+                    // start our spinner
+                    let (keepalive_send, keepalive_recv) = keepalive::channel();
+                    let join_handle = spawn(move || {
+                        let counter = 0;
+                        let spinner = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        while keepalive_recv.is_alive() {
+                            for x in 0..9 {
+                                println!("\x1b[1A \x1b[38C{}", spinner[x]);
+                                sleep(Duration::from_millis(50));
+                            }
+                        }
+                        counter
+                    });
 
                     let req_res = process_blob(
                         log,
                         "tmp-store".to_string(),
+                        skip_verify,
                         digest.to_string(),
                         destination.clone(),
                         path.to_string(),
@@ -52,16 +95,23 @@ pub async fn removable_media_disk_to_mirror(
                     )
                     .await;
                     if req_res.is_err() {
-                        log.error(&format!("{:?}", req_res.err().unwrap()));
-                        continue;
+                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
+                        log.error(&format!(
+                            "{:}",
+                            req_res.err().unwrap().to_string().to_lowercase()
+                        ));
+                        process::exit(1);
                     }
+                    drop(keepalive_send);
+                    let _ = join_handle.join().unwrap();
+                    println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                     fs::remove_file("tmp-store/".to_string() + digest)
                         .expect("should delete tmp file");
                 }
             }
         } else {
             log.error(&format!(
-                "reading mirroror-blobs.tar {:?}",
+                "reading mirroror-blobs.tar {:}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
             process::exit(1);
@@ -71,13 +121,14 @@ pub async fn removable_media_disk_to_mirror(
     // open the metadata tar file
     let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
     if data.is_ok() {
+        //let mut archive_count = Archive::new(data.as_ref().unwrap());
+        //let count = archive_count.entries().unwrap().enumerate().count();
         let mut archive = Archive::new(data.unwrap());
-        for (_i, file) in archive.entries().unwrap().enumerate() {
+        for (i, file) in archive.entries().unwrap().enumerate() {
             let f = file.as_ref().unwrap().path().unwrap();
             let name = f.file_name();
             if name.is_some() {
                 let op_path = f.as_ref().to_string_lossy().to_string();
-                //log.info(&format!("manifest file {:#?}", op_path.clone()));
                 let manifest = &mut "".to_string();
                 let mut ex = file.unwrap();
                 let res = ex.read_to_string(manifest);
@@ -98,7 +149,7 @@ pub async fn removable_media_disk_to_mirror(
                         _ => "none".to_string(),
                     };
                     let ns = path.split(&splitter).nth(1).unwrap();
-
+                    log.ex(&format!("  pushing manifest ({:0>3}) {}", i, sha_clean));
                     if res.is_ok() {
                         let req_res = process_manifests(
                             log,
@@ -110,11 +161,20 @@ pub async fn removable_media_disk_to_mirror(
                         )
                         .await;
                         if req_res.is_err() {
-                            log.error(&format!("{:?}", req_res.err().unwrap()));
+                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
+                            log.error(&format!(
+                                "{:?}",
+                                req_res.err().unwrap().to_string().to_lowercase()
+                            ));
                             process::exit(1);
                         }
+                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                     } else {
-                        log.error(&format!("{:?}", res.err().unwrap()));
+                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
+                        log.error(&format!(
+                            "{:?}",
+                            res.err().unwrap().to_string().to_lowercase()
+                        ));
                         process::exit(1);
                     }
                 }
@@ -150,6 +210,7 @@ async fn verify_file(log: &Logging, dir: String, blob_sum: String, blob_size: u6
 pub async fn process_blob(
     log: &Logging,
     dir: String,
+    skip_verify: bool,
     blob: String,
     url: String,
     namespace: String,
@@ -178,20 +239,27 @@ pub async fn process_blob(
         .send()
         .await;
 
-    let response = res.unwrap();
-
-    if response.status() != StatusCode::ACCEPTED {
+    if res.is_ok() {
+        if res.as_ref().unwrap().status() != StatusCode::ACCEPTED {
+            let err = MirrorError::new(&format!(
+                "initial post failed with status {:#?}",
+                res.unwrap().status()
+            ));
+            return Err(err);
+        }
+    } else {
         let err = MirrorError::new(&format!(
-            "initial post failed with status {:#?}",
-            response.status()
+            "{:?}",
+            res.err().unwrap().to_string().to_lowercase()
         ));
         return Err(err);
     }
 
+    let response = res.unwrap();
     log.debug(&format!("headers {:#?}", response.headers()));
     let location = response.headers().get("Location").unwrap();
 
-    log.hi(&format!("pushing blob {:#?}", &blob));
+    //log.hi(&format!("pushing blob {}", &blob));
 
     let res_head = client
         .head(head_url.clone() + &blob)
@@ -206,18 +274,20 @@ pub async fn process_blob(
         let mut file = File::open(dir.clone() + &"/" + &blob).await.unwrap();
         let mut vec_bytes = Vec::new();
         let _buf = file.read_to_end(&mut vec_bytes).await.unwrap();
-        verify_file(
-            log,
-            dir.clone(),
-            blob.clone(),
-            vec_bytes.len() as u64,
-            vec_bytes.clone(),
-        )
-        .await;
+        if !skip_verify {
+            verify_file(
+                log,
+                dir.clone(),
+                blob.clone(),
+                vec_bytes.len() as u64,
+                vec_bytes.clone(),
+            )
+            .await;
+        }
         let url = location.to_str().unwrap().to_string() + &"&digest=sha256:" + &blob;
         log.debug(&format!("url  {:#?}", url.clone()));
 
-        log.info(&format!(
+        log.debug(&format!(
             "content info  {:#?} {:#?}",
             vec_bytes.clone().len(),
             &blob
@@ -252,7 +322,7 @@ pub async fn process_manifests(
     manifest: Manifest,
     url: String,
     namespace: String,
-    digest: String,
+    tag_digest: String,
     token: String,
 ) -> Result<String, MirrorError> {
     let client = Client::new();
@@ -270,13 +340,13 @@ pub async fn process_manifests(
     );
 
     let str_digest: String;
-    if digest == "".to_string() {
+    if tag_digest == "".to_string() {
         let mut hasher = Sha256::new();
         hasher.update(serialized_manifest.clone());
         let hash_bytes = hasher.finalize();
         str_digest = encode(hash_bytes);
     } else {
-        str_digest = digest.replace(":", "-");
+        str_digest = tag_digest.replace(":", "-");
     }
     let res_put = client
         .put(put_url.clone() + &str_digest.clone())
@@ -290,12 +360,11 @@ pub async fn process_manifests(
         .await;
 
     let result = res_put.unwrap();
-    log.info(&format!("processed manifest {}", str_digest));
-    log.debug(&format!(
+    log.trace(&format!(
         "result for manifest {:#?} {} {}",
         result.status(),
         namespace,
-        put_url.clone() + &str_digest.clone()[0..7]
+        put_url.clone() + &str_digest
     ));
 
     if result.status() != StatusCode::CREATED && result.status() != StatusCode::OK {

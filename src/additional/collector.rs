@@ -59,8 +59,8 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             "list"
         );
         if !skip_manifests_check {
-            log.ex(&format!(
-                "api call : checking manifest list {:#}",
+            log.mid(&format!(
+                "api call manifest list for {:#}",
                 ir.registry.clone() + &"/" + &ir.namespace.clone() + "/" + &ir.name.clone()
             ));
             let res = reg_con

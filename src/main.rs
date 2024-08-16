@@ -1,5 +1,6 @@
 // use modules
 use crate::additional::collector::*;
+use crate::clusterresources::generate::*;
 use crate::operator::collector::*;
 use crate::release::collector::*;
 use clap::Parser;
@@ -16,8 +17,10 @@ mod archive;
 mod clusterresources;
 mod config;
 mod error;
+mod graphdata;
 mod image;
 mod operator;
+mod podman;
 mod release;
 mod removable_media;
 
@@ -93,10 +96,11 @@ async fn main() {
     // this is mirrorToDisk
     if args.destination.contains("file://") {
         let destination = args.destination.split("file://").nth(1).unwrap();
+        log.info(&format!("destination {}", destination));
         fs::create_dir_all(&format!(
             "{}/{}",
             destination,
-            "working-dir/mirror-metadata".to_string()
+            "mirror-metadata".to_string()
         ))
         .expect("should create manifests directory");
 
@@ -143,7 +147,7 @@ async fn main() {
             .await;
         }
 
-        if !dry_run {
+        if !dry_run && !skip_manifest_check {
             // finally create tar archive
             log.info("creating tar files");
             let res = create_tar(log, destination.to_string());
@@ -160,6 +164,7 @@ async fn main() {
         }
     } else {
         // this is disk-to-mirror
+
         let destination_registry = args.destination;
         if !destination_registry.contains("docker://") {
             log.error("destination disk-to-mirror must have docker:// prefix");
@@ -170,17 +175,38 @@ async fn main() {
             process::exit(exitcode::USAGE);
         } else {
             if !args.from.contains("file://") {
-                log.error("from director with protocolg must have file::// prefix");
+                log.error("from director with protocol must have file::// prefix");
                 process::exit(exitcode::USAGE);
             }
         }
         let from = args.from.split("file://").nth(1).unwrap().to_string();
         removable_media_disk_to_mirror(
             log,
-            from,
+            from.clone(),
             destination_registry.clone(),
             args.skip_blob_upload,
+            true,
         )
         .await;
+
+        // generate idms, itms and catalog source
+        let gcr = GenerateClusterResources::new(from.clone());
+        let res = gcr.untar_metadata(log);
+        if res.is_err() {
+            log.error(&format!(
+                "untarring archive (metadata) {:#}",
+                res.err().unwrap()
+            ));
+        }
+
+        let gen_res = gcr.generate_idms_itms(log, from.clone(), destination_registry);
+        if gen_res.is_err() {
+            log.error(&format!("{:#}", gen_res.err().unwrap()));
+        }
+
+        let res = gcr.clean_up();
+        if res.is_err() {
+            log.error(&format!("{:#}", res.err().unwrap()));
+        }
     }
 }

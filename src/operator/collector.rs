@@ -315,7 +315,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                             image_vec.insert(0, ri.image.clone());
                             let ir_pkg = parse_url(log, ri.image.clone());
                             let mut manifest: String = String::new();
-                            if skip_manifests_check {
+                            if !skip_manifests_check {
                                 let url = &format!(
                                     "https://{}/v2/{}/{}/manifests/{}",
                                     ir_pkg.registry, ir_pkg.namespace, ir_pkg.name, ir_pkg.version
@@ -340,7 +340,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 }
                             } else {
                                 let manifest_file = format!(
-                                    "{}/manifests/{}-list.json",
+                                    "{}/manifests/operator/{}-list.json",
                                     dir.clone(),
                                     ir_pkg.version
                                 );
@@ -360,9 +360,15 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 if ml.media_type
                                     == "application/vnd.docker.distribution.manifest.list.v2+json"
                                 {
-                                    let digest = get_sha_from_contents(manifest.clone().as_bytes());
+                                    let tmp_digest =
+                                        get_sha_from_contents(manifest.clone().as_bytes());
+                                    let digest = format!("sha256:{}", tmp_digest.clone());
+
                                     if digest != ir_pkg.version {
-                                        log.warn(&format!("digest does not match {}", digest));
+                                        log.warn(&format!(
+                                            "digest does not match {} : {}",
+                                            digest, ir_pkg.version
+                                        ));
                                     }
                                     let img_ref = MirrorImageInfo {
                                         reference: ir.name.clone() + &"/" + &ir.version,
@@ -397,9 +403,9 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                 mf.digest.as_ref().unwrap()
                                             );
 
-                                            log.debug(&format!(
-                                                "arch manifest url {:#?}",
-                                                arch_mnfst_url.clone()
+                                            log.mid(&format!(
+                                                "api call for manifest {:#?}",
+                                                f.clone()
                                             ));
                                             // use the RegistryInterface to make the api call
                                             let res = reg_con
