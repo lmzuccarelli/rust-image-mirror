@@ -226,7 +226,7 @@ impl GenerateClusterResources {
                         if mi.arch == "x86_64"
                             || mi.arch == "amd64" && mi.tag.is_some() && mi.digest.len() == 0
                         {
-                            log.info(&format!("{}", mi.reference.clone()));
+                            log.debug(&format!("{}", mi.reference.clone()));
                             let img = parse_image(log, mi.reference.clone());
                             let key = format!("{}/{}", img.registry, img.namespace);
                             let dest = format!("{}/{}", destination.clone(), mi.namespace.clone());
@@ -264,12 +264,18 @@ impl GenerateClusterResources {
     }
 
     pub fn generate_catalog_source(
-        &mut self,
+        &self,
         log: &Logging,
         dir: String,
-        catalog: String,
+        _catalog: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        log.info("generating catalogsourcerld");
+        log.info("generating catalogsource");
+        fs::write(
+            format!("{}/{}{}", &dir, &"/cluster-resources/cs-", "image.yaml"),
+            "",
+        )
+        .expect("should create catalogsource file");
+
         //self.spec.image = catalog.replace(":", "-").replace(".", "-").to_string();
         //self.api_version = "config.openshift.io/v1".to_string();
         //self.kind = "CatalogSource".to_string();
@@ -281,8 +287,8 @@ impl GenerateClusterResources {
             .write(true)
             .create(true)
             .open(format!(
-                "{}/{}{}{}",
-                &dir, &"cluster-resources/cs-", "image", ".yaml"
+                "{}/{}{}",
+                &dir, &"/cluster-resources/cs-", "image.yaml"
             ))
             .expect("Couldn't open file");
         serde_yaml::to_writer(file, &self).unwrap();

@@ -4,6 +4,29 @@ use custom_logger::*;
 use mirror_copy::*;
 use std::fs;
 
+// used to drive a spinner
+#[allow(unused)]
+pub mod keepalive {
+    use std::sync::{Arc, Weak};
+
+    pub struct Sender(Arc<()>);
+
+    #[derive(Clone)]
+    pub struct Receiver(Weak<()>);
+
+    pub fn channel() -> (Sender, Receiver) {
+        let arc = Arc::new(());
+        let weak = Arc::downgrade(&arc);
+        (Sender(arc), Receiver(weak))
+    }
+
+    impl Receiver {
+        pub fn is_alive(&self) -> bool {
+            Weak::strong_count(&self.0) > 0
+        }
+    }
+}
+
 pub fn parse_image(log: &Logging, image: String) -> ImageReference {
     // check if we have digest
     if image.contains("@") {

@@ -199,7 +199,12 @@ async fn main() {
             ));
         }
 
-        let gen_res = gcr.generate_idms_itms(log, from.clone(), destination_registry);
+        let gen_res = gcr.generate_idms_itms(log, from.clone(), destination_registry.clone());
+        if gen_res.is_err() {
+            log.error(&format!("{:#}", gen_res.err().unwrap()));
+        }
+
+        let gen_res = gcr.generate_catalog_source(log, from.clone(), destination_registry);
         if gen_res.is_err() {
             log.error(&format!("{:#}", gen_res.err().unwrap()));
         }
