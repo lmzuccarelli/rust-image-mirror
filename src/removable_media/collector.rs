@@ -1,4 +1,4 @@
-use crate::archive::metadata_cache::MirrorStats;
+use crate::archive::create::MirrorStats;
 use crate::image::utils::keepalive;
 use custom_logger::*;
 use hex::encode;

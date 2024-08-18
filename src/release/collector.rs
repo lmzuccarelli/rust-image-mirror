@@ -542,7 +542,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     "release".to_string(),
                 );
                 if p_fbi.is_ok() {
-                    image_ref_tracker.append(&mut p_fbi.unwrap());
+                    image_ref_tracker.insert(0, p_fbi.unwrap());
                 } else {
                     log.error(&format!(
                         "{}",

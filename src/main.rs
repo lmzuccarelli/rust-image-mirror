@@ -14,6 +14,7 @@ use tokio;
 mod additional;
 mod api;
 mod archive;
+mod catalog;
 mod clusterresources;
 mod config;
 mod error;
@@ -27,7 +28,7 @@ mod removable_media;
 // use local modules
 use api::schema::*;
 //use clusterresources::*;
-use archive::metadata_cache::*;
+use archive::create::*;
 use config::load::*;
 use removable_media::collector::*;
 

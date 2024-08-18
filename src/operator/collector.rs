@@ -1,4 +1,5 @@
 use crate::api::schema::MirrorImageInfo;
+use crate::catalog::builder::*;
 use crate::config::load::*;
 use crate::image::utils::{parse_image, parse_json_metadata};
 use custom_logger::*;
@@ -66,6 +67,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     let blobs_dir = dir.clone() + "/blobs-store/";
     let mut image_vec: Vec<String> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
+    let mut vec_catalog_info: Vec<CatalogCopyInfo> = Vec::new();
 
     // get all relevant catalogs in config
     // download manifests and blobs if changed
@@ -304,11 +306,23 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 }
 
                 // iterate for each bundle
+                let mut found_channel: String = String::new();
                 for bundle_name in vec_bundles {
                     let key = bundle_name.clone() + &"=olm.bundle".to_string();
                     let bundle = dc_map.get(&key);
                     if bundle.is_some() {
-                        log.debug(&format!("bundle from dc_map {:#?}", bundle));
+                        log.info(&format!("bundle name {:#?}", bundle_name.clone()));
+                        // get the relevant channels
+                        for (k, v) in dc_map.iter() {
+                            if k.contains("olm.channel") {
+                                for e in v.entries.as_ref().unwrap().iter() {
+                                    if e.name.contains(&bundle_name.clone()) {
+                                        found_channel = k.split("=").nth(0).unwrap().to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         // we can  get all related images
                         let related_images = bundle.unwrap().related_images.clone().unwrap();
                         for ri in related_images.iter() {
@@ -561,8 +575,23 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         log.error(&format!("bundle not found {:#?}", bundle));
                     }
                 }
+                let cci = CatalogCopyInfo {
+                    catalog: operator.catalog.clone(),
+                    package: pkg.name.clone(),
+                    channel: found_channel.clone(),
+                };
+                vec_catalog_info.insert(0, cci.clone());
             }
         }
+    }
+
+    let g_bc = ImplCatalogBuildInterface {};
+    let res_bc = g_bc.build_catalog(log, dir.clone(), vec_catalog_info).await;
+    if res_bc.is_err() {
+        log.error(&format!(
+            "could not rebuild catalog {}",
+            res_bc.err().unwrap().to_string()
+        ));
     }
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());

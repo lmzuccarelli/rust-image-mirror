@@ -89,11 +89,11 @@ pub fn process_fb_image(
     reference: String,
     tag_digest: String,
     mirror_type: String,
-) -> Result<Vec<MirrorImageInfo>, MirrorError> {
+) -> Result<MirrorImageInfo, MirrorError> {
     let index_json = format!("{}/manifest.json", &oci);
     let index_data = fs::read_to_string(index_json);
     let m = parse_json_manifest_operator(index_data.as_ref().unwrap().to_string());
-    let mut vec_mii: Vec<MirrorImageInfo> = Vec::new();
+    //let mut mii: MirrorImageInfo;
     if m.is_ok() {
         let mnfst = m.unwrap();
         for mn in mnfst.layers.unwrap().iter() {
@@ -105,13 +105,13 @@ pub fn process_fb_image(
                 format!("{}/{}", &oci, blob),
                 format!("{}/{}", to_path, blob),
             )
-            .expect("should copy oci blob");
+            .expect("should copy blob");
         }
         // copy the config
         let cfg = mnfst.config;
         let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
         let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
-        fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy oci config blob");
+        fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy fb config blob");
         // finally write the manifest
         let manifest_file = format!(
             "{}/manifests/{}/{}:{}-all.json",
@@ -141,8 +141,7 @@ pub fn process_fb_image(
             mii.digest = blob.to_string();
             mii.tag = None;
         }
-        vec_mii.insert(0, mii);
-        Ok(vec_mii)
+        Ok(mii)
     } else {
         let err = MirrorError::new(&format!(
             "parsing fb manifest {}",
