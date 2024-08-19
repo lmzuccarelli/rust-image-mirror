@@ -14,6 +14,7 @@ use tokio;
 mod additional;
 mod api;
 mod archive;
+mod batch;
 mod catalog;
 mod clusterresources;
 mod config;
@@ -111,7 +112,7 @@ async fn main() {
         // check for release images
         let skip_manifest_check = skip_manifests == "release" || skip_manifests == "all";
         if isc_config_final.mirror.release.is_some() {
-            release_mirror_to_disk(
+            let res = release_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
@@ -120,11 +121,15 @@ async fn main() {
                 isc_config_final.mirror.release.unwrap(),
             )
             .await;
+            if res.is_err() {
+                log.error(&format!("{}", res.err().unwrap()));
+                process::exit(1);
+            }
         }
         // check for operators
         let skip_manifest_check = skip_manifests == "operators" || skip_manifests == "all";
         if isc_config_final.mirror.operators.is_some() {
-            operator_mirror_to_disk(
+            let res = operator_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
@@ -133,11 +138,14 @@ async fn main() {
                 isc_config_final.mirror.operators.unwrap(),
             )
             .await;
+            if res.is_err() {
+                log.error(&format!("{}", res.err().unwrap()));
+            }
         }
         // check for additional images
         let skip_manifest_check = skip_manifests == "additional" || skip_manifests == "all";
         if isc_config_final.mirror.additional_images.is_some() {
-            additional_mirror_to_disk(
+            let res = additional_mirror_to_disk(
                 reg_con.clone(),
                 log,
                 destination.to_string(),
@@ -146,26 +154,22 @@ async fn main() {
                 isc_config_final.mirror.additional_images.unwrap(),
             )
             .await;
+            if res.is_err() {
+                log.error(&format!("{}", res.err().unwrap()));
+            }
         }
 
+        // finally create tar archive
         if !dry_run && !skip_manifest_check {
-            // finally create tar archive
             log.info("creating tar files");
             let res = create_tar(log, destination.to_string());
-            match res {
-                Ok(_) => {
-                    log.info("tar files successfully created");
-                    process::exit(0);
-                }
-                Err(err) => {
-                    log.error(&format!("errror creating tar {:#?}", err));
-                    process::exit(1);
-                }
+            if res.is_err() {
+                log.error(&format!("error creating tar {}", res.err().unwrap()));
+                process::exit(1);
             }
         }
     } else {
         // this is disk-to-mirror
-
         let destination_registry = args.destination;
         if !destination_registry.contains("docker://") {
             log.error("destination disk-to-mirror must have docker:// prefix");
@@ -181,7 +185,7 @@ async fn main() {
             }
         }
         let from = args.from.split("file://").nth(1).unwrap().to_string();
-        removable_media_disk_to_mirror(
+        let res = removable_media_disk_to_mirror(
             log,
             from.clone(),
             destination_registry.clone(),
@@ -189,6 +193,10 @@ async fn main() {
             true,
         )
         .await;
+        if res.is_err() {
+            log.error(&format!("error creating tar {}", res.err().unwrap()));
+            process::exit(1);
+        }
 
         // generate idms, itms and catalog source
         let gcr = GenerateClusterResources::new(from.clone());

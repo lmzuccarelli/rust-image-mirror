@@ -1,14 +1,14 @@
 use crate::api::schema::MirrorImageInfo;
+use crate::batch::worker::*;
 use crate::config::load::*;
+use crate::error::handler::MirrorError;
 use crate::graphdata::process::GraphDataInterface;
 use crate::graphdata::process::ImplGraphDataInterface;
 use crate::image::utils::*;
 use chrono::{DateTime, Local};
 use custom_logger::*;
-use futures::stream::FuturesUnordered;
-use futures::stream::StreamExt;
 use hex::encode;
-use mirror_auth::*;
+use mirror_auth::get_token;
 use mirror_catalog_index::*;
 use mirror_copy::*;
 use serde_derive::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 use std::process;
+use std::usize;
 use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -85,7 +86,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     skip_manifests_check: bool,
     dry_run: bool,
     releases: Release,
-) {
+) -> Result<(), MirrorError> {
     log.hi("release collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
@@ -198,11 +199,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 vec_process_manifests.insert(0, release_image_info);
                             }
                         } else {
-                            log.error(&format!(
-                                "release servere multi arch error {:#}",
-                                manifest.err().unwrap()
+                            let err = MirrorError::new(&format!(
+                                "release servere multi arch  {}",
+                                manifest.err().unwrap().to_string().to_lowercase()
                             ));
-                            process::exit(1);
+                            return Err(err);
                         }
                     }
                 }
@@ -243,11 +244,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 }
             }
         } else {
-            log.error(&format!(
-                "release : servere error {:#}",
-                manifest.err().unwrap()
+            let err = MirrorError::new(&format!(
+                "release servere  {}",
+                manifest.err().unwrap().to_string().to_lowercase()
             ));
-            process::exit(1);
+            return Err(err);
         }
 
         if vec_process_manifests.clone().len() == 0 {
@@ -290,8 +291,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 )
                                 .await;
                             if response.is_err() {
-                                log.error(&format!("{:#?}", response.err().unwrap()));
-                                process::exit(1);
+                                let err = MirrorError::new(&format!(
+                                    "manifest api call {}",
+                                    response.err().unwrap().to_string().to_lowercase()
+                                ));
+                                return Err(err);
                             }
                             vec_fslayer.append(&mut v1_mnfst.fs_layers.clone());
                             log.info("completed release image index (v1) download");
@@ -304,6 +308,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 blob_sum: layer.digest.clone(),
                                 original_ref: Some(mf.clone().original_ref),
                                 size: Some(layer.size),
+                                number: None,
                             };
                             vec_fslayer.insert(0, fslayer);
                         }
@@ -318,18 +323,21 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             .await;
 
                         if response.is_err() {
-                            log.error(&format!("{:#?}", response.err().unwrap()));
-                            process::exit(1);
+                            let err = MirrorError::new(&format!(
+                                "get_blob api call {}",
+                                response.err().unwrap().to_string().to_lowercase()
+                            ));
+                            return Err(err);
                         }
-
                         log.info("completed release image index (v2) download");
                     }
                 }
             } else {
-                log.error(&format!(
-                    "could not read manifest {:#?}",
-                    manifest_on_disk.err().unwrap()
+                let err = MirrorError::new(&format!(
+                    "reading manifest {}",
+                    manifest_on_disk.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
 
             let working_dir_cache = &format!(
@@ -439,10 +447,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                             .expect("unable to write file");
                                     }
                                 } else {
-                                    log.error(&format!(
-                                        "manifest api call {:#?}",
-                                        res_manifest.err().unwrap()
+                                    let err = MirrorError::new(&format!(
+                                        "manifest api call {}",
+                                        res_manifest.err().unwrap().to_string().to_lowercase()
                                     ));
+                                    return Err(err);
                                 }
                             }
 
@@ -479,6 +488,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                         blob_sum: layer.digest.clone(),
                                         original_ref: Some(img.from.name.clone()),
                                         size: Some(layer.size),
+                                        number: None,
                                     };
                                     vec_flayer.insert(0, fslayer);
                                 }
@@ -488,17 +498,17 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                     blob_sum: config.digest,
                                     original_ref: Some(img.from.name.clone()),
                                     size: Some(config.size),
+                                    number: None,
                                 };
                                 vec_flayer.insert(0, cfg);
                                 // finally add the fslayers to the hashmap
                                 fslayers.insert(op_url.clone(), vec_flayer.clone());
                             } else {
-                                log.error(&format!(
-                                    "reading manifest {:#?} from disk {:#?}",
-                                    mnfst_on_disk.clone(),
-                                    md.err().unwrap()
+                                let err = MirrorError::new(&format!(
+                                    "reading manifest form disk {}",
+                                    md.err().unwrap().to_string().to_lowercase()
                                 ));
-                                process::exit(1);
+                                return Err(err);
                             }
 
                             let mii = MirrorImageInfo {
@@ -516,11 +526,15 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             image_ref_tracker.insert(0, mii.clone());
                         }
                     } else {
-                        log.error(&format!(
-                            "parsing release reference {:#?}",
-                            res_manifest_in_mem.err().unwrap()
+                        let err = MirrorError::new(&format!(
+                            "parsing release reference {}",
+                            res_manifest_in_mem
+                                .err()
+                                .unwrap()
+                                .to_string()
+                                .to_lowercase()
                         ));
-                        process::exit(1);
+                        return Err(err);
                     }
                 }
             }
@@ -530,7 +544,6 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     if releases.graph.is_some() {
         if releases.graph.unwrap().contains("true") {
             log.info("build graph data");
-
             let g_impl = ImplGraphDataInterface {};
             let res = g_impl.build_graph_image(log, dir.clone()).await;
             if res.is_ok() {
@@ -544,16 +557,18 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 if p_fbi.is_ok() {
                     image_ref_tracker.insert(0, p_fbi.unwrap());
                 } else {
-                    log.error(&format!(
-                        "{}",
+                    let err = MirrorError::new(&format!(
+                        "process fb image {}",
                         p_fbi.err().unwrap().to_string().to_lowercase()
                     ));
+                    return Err(err);
                 }
             } else {
-                log.error(&format!(
+                let err = MirrorError::new(&format!(
                     "reading tar file {}",
                     res.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
             g_impl.build_image_cleanup().await;
         }
@@ -588,60 +603,30 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     dir.clone() + &"/mappings/",
                 ));
             } else {
-                log.error(&format!(
-                    "parsing release metadata file {:#}",
+                let err = MirrorError::new(&format!(
+                    "parsing release metadata {}",
                     air.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
         } else {
-            log.error(&format!(
-                "reading release metadata file {:#}",
+            let err = MirrorError::new(&format!(
+                "reading release metadata file {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
+            return Err(err);
         }
     } else {
-        // get blobs in batch of 8
-        // each future handles get_blobs api call
-        // with 8 threads (one per digest)
-        let mut futs = FuturesUnordered::new();
-        let batch_size = 8;
-        for (k, v) in fslayers.iter() {
-            // batch the calls
-            let hld = k.split("https://").nth(1).unwrap();
-            let registry = hld.split("/").nth(0).unwrap();
-            log.trace(&format!("url {}", k));
-            let token = get_token(log, registry.to_string()).await;
-            if token.is_ok() {
-                futs.push(reg_con.get_blobs(
-                    log,
-                    dir.clone() + "/blobs-store/",
-                    k.to_string(),
-                    token.as_ref().unwrap().to_string(),
-                    v.clone(),
-                ));
-                if futs.len() >= batch_size {
-                    let response = futs.next().await.unwrap();
-                    log.debug(&format!(
-                        "completed batch of {} {:#?}",
-                        batch_size,
-                        response.unwrap()
-                    ));
-                }
-            } else {
-                log.error(&format!(
-                    "token {:#}",
-                    token.err().unwrap().to_string().to_lowercase()
-                ));
-            }
-        }
-        // Wait for the remaining to finish.
-        while let Some(response) = futs.next().await {
-            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+        let map = remove_duplicates(dir.clone(), fslayers);
+        let res = execute_batch(log, dir.clone(), map).await;
+        if res.is_err() {
+            return Err(res.err().unwrap());
         }
     }
+    Ok(())
 }
 
-// utility functions
+// utility functions section
 
 // get_sha_from_contents
 pub fn get_sha_from_contents(manifest_bytes: &[u8]) -> String {

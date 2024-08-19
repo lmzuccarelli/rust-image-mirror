@@ -2,7 +2,9 @@ use crate::api::schema::MirrorImageInfo;
 use crate::error::handler::MirrorError;
 use custom_logger::*;
 use mirror_copy::*;
+use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 // used to drive a spinner
 #[allow(unused)]
@@ -93,7 +95,6 @@ pub fn process_fb_image(
     let index_json = format!("{}/manifest.json", &oci);
     let index_data = fs::read_to_string(index_json);
     let m = parse_json_manifest_operator(index_data.as_ref().unwrap().to_string());
-    //let mut mii: MirrorImageInfo;
     if m.is_ok() {
         let mnfst = m.unwrap();
         for mn in mnfst.layers.unwrap().iter() {
@@ -111,6 +112,8 @@ pub fn process_fb_image(
         let cfg = mnfst.config;
         let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
         let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
+        let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
+        fs::create_dir_all(to_path.clone()).expect("should create blob directory");
         fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy fb config blob");
         // finally write the manifest
         let manifest_file = format!(
@@ -149,6 +152,38 @@ pub fn process_fb_image(
         ));
         return Err(err);
     }
+}
+
+pub fn remove_duplicates(
+    dir: String,
+    map_in: HashMap<String, Vec<FsLayer>>,
+) -> HashMap<String, Vec<FsLayer>> {
+    let mut map: HashMap<String, Vec<FsLayer>> = HashMap::new();
+    let mut vec_layer: Vec<FsLayer> = Vec::new();
+    // remove duplicates
+    for (k, v) in map_in.iter() {
+        for layer in v.iter() {
+            // scrub out duplicates
+            let truncated_image = layer.blob_sum.split(":").nth(1).unwrap();
+            let inner_blobs_file = get_blobs_file(dir.clone() + &"/blobs-store/", &truncated_image);
+            let mut exists = Path::new(&inner_blobs_file).exists();
+            if exists {
+                let metadata = fs::metadata(&inner_blobs_file).unwrap();
+                if layer.size.is_some() {
+                    if metadata.len() != layer.size.unwrap() as u64 {
+                        exists = false;
+                    }
+                } else {
+                    exists = false;
+                }
+            }
+            if !exists {
+                vec_layer.insert(0, layer.clone());
+            }
+        }
+        map.insert(k.to_string(), vec_layer.clone());
+    }
+    map
 }
 
 // parse the manifest json for operator indexes only

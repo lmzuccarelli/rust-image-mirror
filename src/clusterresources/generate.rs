@@ -139,7 +139,7 @@ impl GenerateClusterResources {
                     let f = x.path().unwrap();
                     let op_path = f.as_ref().to_string_lossy().to_string();
                     if op_path.clone().contains(".json") {
-                        log.info(&format!("full file {}", op_path.clone()));
+                        log.debug(&format!("file {}", op_path.clone()));
                         let res = x.unpack(format!("{}/{}", "tmp-metadata", op_path.clone()));
                         if res.is_err() {
                             let err = MirrorError::new(&format!(
@@ -206,7 +206,7 @@ impl GenerateClusterResources {
         ];
         let mut map_digest: HashMap<String, Vec<String>> = HashMap::new();
         let mut map_tag: HashMap<String, Vec<String>> = HashMap::new();
-        log.info("updating idms file");
+        log.info("generating idms/itms files");
         for file in vec_files.iter() {
             let json = format!("{}/{}", "tmp-metadata", file);
             let data = fs::read_to_string(json.clone());
@@ -217,7 +217,7 @@ impl GenerateClusterResources {
                         if mi.arch == "x86_64"
                             || mi.arch == "amd64" && mi.digest.contains("sha256:")
                         {
-                            log.info(&format!("{}", mi.reference.clone()));
+                            log.debug(&format!("{}", mi.reference.clone()));
                             let img = parse_image(log, mi.reference.clone());
                             let key = format!("{}/{}", img.registry, img.namespace);
                             let dest = format!("{}/{}", destination.clone(), mi.namespace.clone());

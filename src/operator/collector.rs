@@ -1,10 +1,11 @@
 use crate::api::schema::MirrorImageInfo;
+use crate::batch::worker::execute_batch;
 use crate::catalog::builder::*;
 use crate::config::load::*;
+use crate::error::handler::MirrorError;
+use crate::image::utils::remove_duplicates;
 use crate::image::utils::{parse_image, parse_json_metadata};
 use custom_logger::*;
-use futures::stream::FuturesUnordered;
-use futures::stream::StreamExt;
 use hex::encode;
 use mirror_auth::*;
 use mirror_catalog::*;
@@ -12,6 +13,7 @@ use mirror_catalog_index::*;
 use mirror_copy::*;
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
@@ -48,7 +50,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     skip_manifests_check: bool,
     dry_run: bool,
     operators: Vec<Operator>,
-) {
+) -> Result<(), MirrorError> {
     log.hi("operator collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
@@ -62,8 +64,6 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     // parse the config - iterate through each catalog
     let img_ref = parse_index(log, operators.clone());
     log.info(&format!("image refs {:#?}", img_ref));
-    let mut futs = FuturesUnordered::new();
-    let batch_size = 8;
     let blobs_dir = dir.clone() + "/blobs-store/";
     let mut image_vec: Vec<String> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
@@ -187,6 +187,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     blob_sum: l.digest.clone(),
                                     original_ref: Some(ir.name.clone()),
                                     size: Some(l.size),
+                                    number: None,
                                 };
                                 fslayers.insert(0, fsl);
                             }
@@ -228,10 +229,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 .expect("should build updated configs");
                         }
                     } else {
-                        log.error(&format!(
-                            "manifest api call {:#?}",
-                            manifest.as_ref().err().unwrap()
+                        let err = MirrorError::new(&format!(
+                            "manifest api call {}",
+                            manifest.err().unwrap().to_string().to_lowercase()
                         ));
+                        return Err(err);
                     }
 
                     // as all architecture index files are identical
@@ -464,6 +466,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                     blob_sum: layer.digest.clone(),
                                                     original_ref: Some(ri.image.clone()),
                                                     size: Some(layer.size),
+                                                    number: None,
                                                 };
                                                 fslayers.insert(0, fslayer);
                                             }
@@ -472,13 +475,19 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                 blob_sum: config.digest.clone(),
                                                 original_ref: Some(ri.image.clone()),
                                                 size: Some(config.size),
+                                                number: None,
                                             };
                                             fslayers.insert(0, cfg);
                                         } else {
-                                            log.error(&format!(
-                                                "{:#?}",
-                                                op_manifest.err().unwrap()
+                                            let err = MirrorError::new(&format!(
+                                                "parsing manifest {}",
+                                                op_manifest
+                                                    .err()
+                                                    .unwrap()
+                                                    .to_string()
+                                                    .to_lowercase()
                                             ));
+                                            return Err(err);
                                         }
                                     }
                                 }
@@ -525,6 +534,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                             blob_sum: layer.digest.clone(),
                                             original_ref: Some(ri.image.clone()),
                                             size: Some(layer.size),
+                                            number: None,
                                         };
                                         fslayers.insert(0, fslayer);
                                     }
@@ -534,6 +544,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                         blob_sum: config.digest.clone(),
                                         original_ref: Some(ri.image.clone()),
                                         size: Some(config.size),
+                                        number: None,
                                     };
                                     fslayers.insert(0, cfg);
                                 } else {
@@ -546,29 +557,14 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 "https://{}/v2/{}/{}/blobs/",
                                 ir_pkg.registry, ir_pkg.namespace, ir_pkg.name
                             );
-                            // batch the calls
-                            futs.push(reg_con.get_blobs(
-                                log,
-                                blobs_dir.clone(),
-                                op_url,
-                                token.as_ref().unwrap().to_string(),
-                                fslayers,
-                            ));
-                            if futs.len() >= batch_size {
-                                let res = futs.next().await.unwrap();
-                                log.debug(&format!(
-                                    "completed batch of {} {:#?}",
-                                    batch_size,
-                                    res.unwrap()
-                                ));
-                            }
 
-                            // wait for the remaining to finish.
-                            while let Some(response) = futs.next().await {
-                                log.debug(&format!(
-                                    "completed rest of batch {:#?}",
-                                    response.unwrap()
-                                ));
+                            let mut in_map: HashMap<String, Vec<FsLayer>> = HashMap::new();
+                            in_map.insert(op_url.clone(), fslayers.clone());
+                            // batch the calls
+                            let map = remove_duplicates(dir.clone(), in_map);
+                            let res = execute_batch(log, dir.clone(), map).await;
+                            if res.is_err() {
+                                return Err(res.err().unwrap());
                             }
                         }
                     } else {
@@ -623,18 +619,21 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     dir.clone() + &"/mappings/",
                 ));
             } else {
-                log.error(&format!(
-                    "parsing operator metadata file {:#}",
+                let err = MirrorError::new(&format!(
+                    "parsing operator metadata file {}",
                     air.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
         } else {
-            log.error(&format!(
-                "reading operator metadata file {:#}",
+            let err = MirrorError::new(&format!(
+                "reading operator metadata file {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
+            return Err(err);
         }
     }
+    Ok(())
 }
 
 // get_sha_from_contents
@@ -708,6 +707,7 @@ mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
     use async_trait::async_trait;
+    use mirror_copy::MirrorError;
 
     macro_rules! aw {
         ($e:expr) => {
@@ -907,7 +907,7 @@ mod tests {
                 _url: String,
                 _token: String,
                 _layers: Vec<FsLayer>,
-            ) -> Result<String, Box<dyn std::error::Error>> {
+            ) -> Result<String, MirrorError> {
                 log.info("testing logging in fake test");
                 Ok(String::from("test"))
             }
@@ -916,7 +916,7 @@ mod tests {
                 &self,
                 log: &Logging,
                 _dir: String,
-                _subdir: String,
+                _sub_component: String,
                 _url: String,
                 _token: String,
                 _manifest: Manifest,
@@ -929,7 +929,7 @@ mod tests {
         let fake = Fake {};
 
         let ops = vec![op.clone()];
-        aw!(operator_mirror_to_disk(
+        let res = aw!(operator_mirror_to_disk(
             fake.clone(),
             log,
             String::from("./test-artifacts/"),
@@ -937,5 +937,8 @@ mod tests {
             true,
             ops.clone()
         ));
+        if res.is_ok() {
+            log.info("testing logging in fake test");
+        }
     }
 }

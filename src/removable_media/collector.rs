@@ -1,11 +1,11 @@
 use crate::archive::create::MirrorStats;
+use crate::error::handler::MirrorError;
 use crate::image::utils::keepalive;
 use custom_logger::*;
 use hex::encode;
 use mirror_copy::get_destination_registry;
 use mirror_copy::parse_json_manifest_operator;
 use mirror_copy::Manifest;
-use mirror_copy::MirrorError;
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
 use sha256::*;
@@ -25,7 +25,7 @@ pub async fn removable_media_disk_to_mirror(
     destination: String,
     skip_blobs: bool,
     skip_verify: bool,
-) {
+) -> Result<(), MirrorError> {
     // open the blobs tar
     log.hi("removable media collector mode: disk-to-mirror");
 
@@ -33,15 +33,17 @@ pub async fn removable_media_disk_to_mirror(
     let data = fs::read_to_string(format!("{}/{}", from.clone(), "mirror-stats.json"));
     let ms: MirrorStats = serde_json::from_str(data.as_ref().unwrap()).unwrap();
     let mut blob_count = 1;
+    let mut bar = "% completed    [--------------------------------------------------------------]"
+        .to_string();
+    let amount = ms.blob_count as f32 / 51.0;
+    let update = 10.0 / amount;
 
     fs::create_dir_all("tmp-store").expect("should create tmp dir");
     if !skip_blobs {
         let data = std::fs::File::open(from.clone() + &"/mirror-blobs.tar".to_string());
         if data.is_ok() {
-            //let mut archive_count = Archive::new(data.as_ref().unwrap());
-            //let count = archive_count.entries().unwrap().enumerate().count();
             let mut archive = Archive::new(data.unwrap());
-            //log.lo(&format!("found {} blobs to process", count));
+            log.mid(&bar);
             for (_i, file) in archive.entries().unwrap().enumerate() {
                 let mut x = file.unwrap();
                 let f = x.path().unwrap();
@@ -55,10 +57,8 @@ pub async fn removable_media_disk_to_mirror(
                         log.error(&format!("{:?}", res.err().unwrap()));
                         continue;
                     }
-                    log.ex(&format!(
-                        "  pushing blob ({:0>4}/{}) {}",
-                        blob_count, ms.blob_count, digest
-                    ));
+
+                    log.ex(&format!("  pushing blob {}", digest));
                     // start our spinner
                     let (keepalive_send, keepalive_recv) = keepalive::channel();
                     let join_handle = spawn(move || {
@@ -97,8 +97,14 @@ pub async fn removable_media_disk_to_mirror(
                     fs::remove_file("tmp-store/".to_string() + digest)
                         .expect("should delete tmp file");
                     blob_count += 1;
+                    if blob_count % 10 == 0 {
+                        bar = bar.replacen("-", "#", update.round() as usize + 1);
+                        log.mid(&bar);
+                    }
                 }
             }
+            bar = bar.replacen("-", "#", 15);
+            log.mid(&bar);
         } else {
             log.error(&format!(
                 "reading mirroror-blobs.tar {:}",
@@ -111,10 +117,14 @@ pub async fn removable_media_disk_to_mirror(
     // open the metadata tar file
     let mut manifest_count = 1;
     let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
+    let mut bar = "% completed    [--------------------------------------------------------------]"
+        .to_string();
+    let amount = ms.manifest_count as f32 / 51.0;
+    let update = 20.0 / amount;
+
     if data.is_ok() {
-        //let mut archive_count = Archive::new(data.as_ref().unwrap());
-        //let count = archive_count.entries().unwrap().enumerate().count();
         let mut archive = Archive::new(data.unwrap());
+        log.mid(&bar);
         for (_i, file) in archive.entries().unwrap().enumerate() {
             let f = file.as_ref().unwrap().path().unwrap();
             let name = f.file_name();
@@ -143,10 +153,7 @@ pub async fn removable_media_disk_to_mirror(
                         _ => "none".to_string(),
                     };
                     let ns = path.split(&splitter).nth(1).unwrap();
-                    log.ex(&format!(
-                        "  pushing manifest ({:0>4}/{}) {}",
-                        manifest_count, ms.manifest_count, ns
-                    ));
+                    log.ex(&format!("  pushing manifest {}", ns));
                     if res.is_ok() {
                         let req_res = process_manifests(
                             log,
@@ -167,6 +174,10 @@ pub async fn removable_media_disk_to_mirror(
                         }
                         println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                         manifest_count += 1;
+                        if manifest_count % 20 == 0 {
+                            bar = bar.replacen("-", "#", update.round() as usize + 1);
+                            log.mid(&bar);
+                        }
                     } else {
                         println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
                         log.error(&format!(
@@ -178,6 +189,8 @@ pub async fn removable_media_disk_to_mirror(
                 }
             }
         }
+        bar = bar.replacen("-", "#", 15);
+        log.mid(&bar);
     } else {
         log.error(&format!(
             "reading mirror-manifest.tar {:?}",
@@ -186,6 +199,7 @@ pub async fn removable_media_disk_to_mirror(
         process::exit(1);
     }
     fs::remove_dir_all("tmp-store").expect("should clean up temp folders");
+    Ok(())
 }
 
 // verify_file - function to check size and sha256 hash of contents

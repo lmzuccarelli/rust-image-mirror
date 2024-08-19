@@ -1,6 +1,4 @@
 use custom_logger::*;
-use futures::stream::FuturesUnordered;
-use futures::stream::StreamExt;
 use mirror_auth::*;
 use mirror_copy::{parse_json_manifest_operator, *};
 use std::collections::HashMap;
@@ -8,7 +6,9 @@ use std::fs;
 use std::process;
 
 use crate::api::schema::MirrorImageInfo;
+use crate::batch::worker::execute_batch;
 use crate::config::load::*;
+use crate::error::handler::MirrorError;
 use crate::image::utils::*;
 
 // collect all additional images
@@ -19,10 +19,10 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
     skip_manifests_check: bool,
     dry_run: bool,
     additional: Vec<Image>,
-) {
+) -> Result<(), MirrorError> {
     log.hi("additional images collector mode: mirror-to-disk");
 
-    let blobs_dir = dir.clone() + "/blobs-store/";
+    //let blobs_dir = dir.clone() + "/blobs-store/";
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut vec_fslayers: Vec<FsLayer> = vec![];
     let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
@@ -113,10 +113,11 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                         fs::write(arch_manifest_json.clone(), res.as_ref().unwrap())
                             .expect("unable to write manifest.json file");
                     } else {
-                        log.error(&format!(
-                            "api call for arch manifest {:?}",
+                        let err = MirrorError::new(&format!(
+                            "api call for arch manifest {}",
                             res.err().unwrap().to_string().to_lowercase()
                         ));
+                        return Err(err);
                     }
                 }
             }
@@ -174,6 +175,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                                     blob_sum: l.digest.clone(),
                                     original_ref: Some(ir.name.clone()),
                                     size: Some(l.size),
+                                    number: None,
                                 };
                                 vec_fslayers.insert(0, fsl.clone());
                             }
@@ -182,6 +184,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                                 blob_sum: cfg.digest.clone(),
                                 original_ref: Some(ir.name.clone()),
                                 size: Some(cfg.size),
+                                number: None,
                             };
                             vec_fslayers.insert(0, fsl);
                             let img_ref = MirrorImageInfo {
@@ -198,18 +201,18 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                             };
                             image_ref_tracker.insert(0, img_ref.clone());
                         } else {
-                            log.error(&format!(
-                                "could not parse manifest for architecture {} {:#}",
-                                arch.clone(),
+                            let err = MirrorError::new(&format!(
+                                "parsing manifest for arch {}",
                                 arch_manifest.err().unwrap().to_string().to_lowercase()
                             ));
+                            return Err(err);
                         }
                     } else {
-                        log.error(&format!(
-                            "could not read manifest for architecture {} {:#}",
-                            arch.clone(),
+                        let err = MirrorError::new(&format!(
+                            "reading manifest for arch {}",
                             arch_data.err().unwrap().to_string().to_lowercase()
                         ));
+                        return Err(err);
                     }
                 }
                 let url = format!(
@@ -218,16 +221,18 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                 );
                 fslayers.insert(url.clone(), vec_fslayers.clone());
             } else {
-                log.error(&format!(
-                    "could not parse manifest list {:#}",
+                let err = MirrorError::new(&format!(
+                    "parsing manifest list {}",
                     manifestlist_mem.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
         } else {
-            log.error(&format!(
-                "could not read manifest list {:#}",
+            let err = MirrorError::new(&format!(
+                "reading manifest list {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
+            return Err(err);
         }
     }
 
@@ -261,58 +266,27 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                     dir.clone() + &"/mappings/",
                 ));
             } else {
-                log.error(&format!(
-                    "parsing additional images metadata file {:#}",
+                let err = MirrorError::new(&format!(
+                    "parsing additional images metadata file {}",
                     air.err().unwrap().to_string().to_lowercase()
                 ));
+                return Err(err);
             }
         } else {
-            log.error(&format!(
-                "reading additional images metadata file {:#}",
+            let err = MirrorError::new(&format!(
+                "reading additional images metadata file {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
+            return Err(err);
         }
     } else {
-        // we can now get blobs using our cool concurrency model
-        // get blobs in batch of 8
-        // each future handles get_blobs api call
-        // with 8 threads (one per digest)
-        let mut futs = FuturesUnordered::new();
-        let batch_size = 8;
-        for (k, v) in fslayers.iter() {
-            // batch the calls
-            let hld = k.split("https://").nth(1).unwrap();
-            let registry = hld.split("/").nth(0).unwrap();
-            log.trace(&format!("url {}", k));
-            let token = get_token(log, registry.to_string()).await;
-            if token.is_ok() {
-                futs.push(reg_con.get_blobs(
-                    log,
-                    blobs_dir.clone(),
-                    k.to_string(),
-                    token.as_ref().unwrap().to_string(),
-                    v.clone(),
-                ));
-                if futs.len() >= batch_size {
-                    let response = futs.next().await.unwrap();
-                    log.debug(&format!(
-                        "completed batch of {} {:#?}",
-                        batch_size,
-                        response.unwrap()
-                    ));
-                }
-            } else {
-                log.error(&format!(
-                    "token {:#}",
-                    token.err().unwrap().to_string().to_lowercase()
-                ));
-            }
-        }
-        // Wait for the remaining to finish.
-        while let Some(response) = futs.next().await {
-            log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+        let map = remove_duplicates(dir.clone(), fslayers);
+        let res = execute_batch(log, dir.clone(), map).await;
+        if res.is_err() {
+            return Err(res.err().unwrap());
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
