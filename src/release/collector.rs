@@ -90,12 +90,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     log.hi("release collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
-    fs::create_dir_all(&format!(
-        "{}/{}",
-        dir.clone(),
-        "/manifests/release".to_string()
-    ))
-    .expect("should create manifests directory");
+    fs_handler(
+        format!("{}/{}", dir.clone(), "/manifests/release".to_string()),
+        "create_dir",
+        None,
+    )?;
 
     let mut vec_process_manifests: Vec<ReleaseImageInfo> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
@@ -169,8 +168,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 mfst.platform.as_ref().unwrap().architecture,
                             );
                             log.info(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
-                            fs::create_dir_all(manifest_json_dir)
-                                .expect("should create manifest directory");
+                            fs_handler(manifest_json_dir.to_string(), "create_dir", None)?;
                             let mfst_file = format!("{}/manifest.json", manifest_json_dir);
                             // check if it exists first
                             let exists = Path::new(&mfst_file).exists();
@@ -180,8 +178,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                     if msft_on_disk.unwrap()
                                         != manifest.as_ref().unwrap().to_string()
                                     {
-                                        fs::write(mfst_file.clone(), manifest.unwrap().clone())
-                                            .expect("should write manifest file");
+                                        fs_handler(
+                                            mfst_file.clone(),
+                                            "write",
+                                            Some(manifest.unwrap().to_string()),
+                                        )?;
                                         let release_image_info = ReleaseImageInfo {
                                             file: mfst_file.clone(),
                                             original_ref: original_ref.clone(),
@@ -190,8 +191,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                     }
                                 }
                             } else {
-                                fs::write(mfst_file.clone(), manifest.unwrap().clone())
-                                    .expect("should write manifest file");
+                                fs_handler(
+                                    mfst_file.clone().to_string(),
+                                    "write",
+                                    Some(manifest.unwrap().to_string()),
+                                )?;
                                 let release_image_info = ReleaseImageInfo {
                                     file: mfst_file.clone(),
                                     original_ref: original_ref.clone(),
@@ -216,7 +220,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     index_image_ref.clone().version,
                 );
                 log.debug(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
-                fs::create_dir_all(manifest_json_dir).expect("should create manifest directory");
+                fs_handler(manifest_json_dir.to_string(), "create_dir", None)?;
                 let mfst_file = format!("{}/manifest.json", manifest_json_dir);
                 let msft_on_disk = fs::read_to_string(mfst_file.clone());
                 // check if it exists first
@@ -224,8 +228,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 if exists {
                     if msft_on_disk.is_ok() {
                         if msft_on_disk.unwrap() != manifest.as_ref().unwrap().to_string() {
-                            fs::write(mfst_file.clone(), manifest.unwrap().clone())
-                                .expect("should write manifest file");
+                            fs_handler(
+                                mfst_file.clone().to_string(),
+                                "write",
+                                Some(manifest.unwrap().clone().to_string()),
+                            )?;
                             let release_image_info = ReleaseImageInfo {
                                 file: mfst_file.clone(),
                                 original_ref: release.name.clone(),
@@ -234,8 +241,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         }
                     }
                 } else {
-                    fs::write(mfst_file.clone(), manifest.unwrap().clone())
-                        .expect("should write manifest file");
+                    fs_handler(
+                        mfst_file.clone().to_string(),
+                        "write",
+                        Some(manifest.unwrap().clone().to_string()),
+                    )?;
                     let release_image_info = ReleaseImageInfo {
                         file: mfst_file.clone(),
                         original_ref: release.name.clone(),
@@ -443,8 +453,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                         exists = false;
                                     }
                                     if !exists {
-                                        fs::write(f, manifest.clone())
-                                            .expect("unable to write file");
+                                        fs_handler(
+                                            f.to_string(),
+                                            "write",
+                                            Some(manifest.clone().to_string()),
+                                        )?;
                                     }
                                 } else {
                                     let err = MirrorError::new(&format!(
@@ -576,11 +589,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());
     let serialized_manifest = serde_json::to_string(&image_ref_tracker.clone()).unwrap();
-    fs::write(
+    fs_handler(
         dir.clone() + &"/mirror-metadata/release-image-reference.json",
-        serialized_manifest,
-    )
-    .expect("should write image reference json");
+        "write",
+        Some(serialized_manifest),
+    )?;
 
     if dry_run {
         let mut buf = String::from("");
@@ -596,8 +609,11 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         buf = buf + &format!("{}={}\n", src, dest);
                     }
                 }
-                fs::write(dir.clone() + "/mappings/release-mapping.txt", buf)
-                    .expect("should write additional-mapping.txt file");
+                fs_handler(
+                    dir.clone() + "/mappings/release-mapping.txt",
+                    "write",
+                    Some(buf),
+                )?;
                 log.info(&format!(
                     "created release mapping file in folder {}",
                     dir.clone() + &"/mappings/",

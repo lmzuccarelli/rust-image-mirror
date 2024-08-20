@@ -43,12 +43,11 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             ir.registry, ir.namespace, ir.name, ir.version
         );
         // set up dir to store all manifests
-        fs::create_dir_all(&format!(
-            "{}/{}",
-            dir.clone(),
-            "/manifests/additional".to_string()
-        ))
-        .expect("should create manifests directory");
+        fs_handler(
+            format!("{}/{}", dir.clone(), "/manifests/additional"),
+            "create_dir",
+            None,
+        )?;
 
         let mut manifest_list: String = String::new();
         let working_dir_cache = format!("{}/manifests/additional", dir.clone());
@@ -69,13 +68,25 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
 
             // manifest check
             if res.is_ok() {
-                // write manifestlist to disk
-                fs::write(&mflist_file, res.as_ref().unwrap()).expect("write manifest list");
+                //write manifestlist to disk
+                fs_handler(
+                    mflist_file.clone(),
+                    "write",
+                    Some(res.as_ref().unwrap().to_string()),
+                )?;
                 manifest_list = res.unwrap();
             }
         } else {
-            manifest_list =
-                fs::read_to_string(mflist_file.clone()).expect("should read manifest list");
+            let res = fs::read_to_string(mflist_file.clone());
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "reading manifest from diskt {}",
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            } else {
+                manifest_list = res.unwrap();
+            }
         }
 
         let mem_manifest_list = manifest_list.clone();
@@ -110,8 +121,11 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                         .get_manifest(mnfst_url.clone(), token.as_ref().unwrap().clone())
                         .await;
                     if res.is_ok() {
-                        fs::write(arch_manifest_json.clone(), res.as_ref().unwrap())
-                            .expect("unable to write manifest.json file");
+                        fs_handler(
+                            arch_manifest_json.clone(),
+                            "write",
+                            Some(res.as_ref().unwrap().to_string()),
+                        )?;
                     } else {
                         let err = MirrorError::new(&format!(
                             "api call for arch manifest {}",
@@ -238,11 +252,11 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());
     let serialized_manifest = serde_json::to_string(&image_ref_tracker.clone()).unwrap();
-    fs::write(
+    fs_handler(
         dir.clone() + &"/mirror-metadata/additional-image-reference.json",
-        serialized_manifest,
-    )
-    .expect("should write image reference json");
+        "write",
+        Some(serialized_manifest),
+    )?;
 
     // if dry run set don't execute blob concurrency section
     if dry_run {
@@ -259,8 +273,12 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                         buf = buf + &format!("{}={}\n", src, dest);
                     }
                 }
-                fs::write(dir.clone() + "/mappings/additional-mapping.txt", buf)
-                    .expect("should write additional-mapping.txt file");
+                fs_handler(
+                    dir.clone() + "/mappings/additional-mapping.txt",
+                    "write",
+                    Some(buf),
+                )?;
+                //    .expect("should write additional-mapping.txt file");
                 log.info(&format!(
                     "created additional images mapping file in folder {}",
                     dir.clone() + &"/mappings/",

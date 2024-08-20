@@ -3,8 +3,7 @@ use crate::batch::worker::execute_batch;
 use crate::catalog::builder::*;
 use crate::config::load::*;
 use crate::error::handler::MirrorError;
-use crate::image::utils::remove_duplicates;
-use crate::image::utils::{parse_image, parse_json_metadata};
+use crate::image::utils::{fs_handler, parse_image, parse_json_metadata, remove_duplicates};
 use custom_logger::*;
 use hex::encode;
 use mirror_auth::*;
@@ -54,12 +53,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     log.hi("operator collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
-    fs::create_dir_all(&format!(
-        "{}/{}",
-        dir.clone(),
-        "manifests/operator".to_string()
-    ))
-    .expect("should create manifests directory");
+    fs_handler(
+        format!("{}/{}", dir.clone(), "manifests/operator".to_string()),
+        "create_dir",
+        None,
+    )?;
 
     // parse the config - iterate through each catalog
     let img_ref = parse_index(log, operators.clone());
@@ -125,7 +123,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     // create the full path
                     let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
                     log.info(&format!("manifest directory {}", manifest_dir));
-                    fs::create_dir_all(manifest_dir).expect("unable to create manifest directory");
+                    fs_handler(manifest_dir.to_string(), "create_dir", None)?;
                     log.trace(&format!("manifest json file {}", manifest_json));
 
                     let mnfst_url = &format!(
@@ -166,8 +164,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         }
                         if !exists {
                             log.info("detected change in index manifest");
-                            fs::write(manifest_json.clone(), manifest.as_ref().unwrap().clone())
-                                .expect("unable to write (index) manifest.json file");
+                            fs_handler(
+                                manifest_json.clone(),
+                                "write",
+                                Some(manifest.as_ref().unwrap().clone()),
+                            )?;
 
                             // detected a change so clean the dir contents
                             if cache_exists {
@@ -352,7 +353,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                         dir.clone(),
                                         ir_pkg.version.clone()
                                     );
-                                    fs::write(f, manifest.clone()).expect("unable to write file");
+                                    fs_handler(f.to_string(), "write", Some(manifest.clone()))?;
                                 }
                             } else {
                                 let manifest_file = format!(
@@ -360,8 +361,16 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     dir.clone(),
                                     ir_pkg.version
                                 );
-                                manifest = fs::read_to_string(manifest_file)
-                                    .expect("should read manifest list");
+                                let res = fs::read_to_string(manifest_file);
+                                if res.is_err() {
+                                    let err = MirrorError::new(&format!(
+                                        "manifest read from disk {}",
+                                        res.err().unwrap().to_string().to_lowercase()
+                                    ));
+                                    return Err(err);
+                                } else {
+                                    manifest = res.unwrap();
+                                }
                             }
 
                             // check to see if the manifest on disk (operator-rerence-image exists
@@ -431,13 +440,24 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                 )
                                                 .await;
                                             if res.is_ok() {
-                                                fs::write(f, res.as_ref().unwrap())
-                                                    .expect("unable to write arch manifest file");
+                                                fs_handler(
+                                                    f.to_string(),
+                                                    "write",
+                                                    Some(res.as_ref().unwrap().to_string()),
+                                                )?;
                                                 local_manifest = res.unwrap();
                                             }
                                         } else {
-                                            local_manifest = fs::read_to_string(f)
-                                                .expect("should read local arch manifest file");
+                                            let res = fs::read_to_string(f);
+                                            if res.is_err() {
+                                                let err = MirrorError::new(&format!(
+                                                    "local manifest read from disk {}",
+                                                    res.err().unwrap().to_string().to_lowercase()
+                                                ));
+                                                return Err(err);
+                                            } else {
+                                                local_manifest = res.unwrap();
+                                            }
                                         }
                                         // remove registry from related image
                                         let img_ref = MirrorImageInfo {
@@ -514,7 +534,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                         ir_pkg.version,
                                         "all".to_string()
                                     );
-                                    fs::write(f, manifest.clone()).expect("unable to write file");
+                                    fs_handler(
+                                        f.to_string(),
+                                        "write",
+                                        Some(manifest.clone().to_string()),
+                                    )?;
                                     let img_ref = MirrorImageInfo {
                                         reference: ir.name.clone() + &"/" + &ir.version,
                                         name: pkg.name.clone(),
@@ -592,11 +616,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());
     let serialized_manifest = serde_json::to_string(&image_ref_tracker.clone()).unwrap();
-    fs::write(
+    fs_handler(
         dir.clone() + &"/mirror-metadata/operator-image-reference.json",
-        serialized_manifest,
-    )
-    .expect("should write image reference json");
+        "write",
+        Some(serialized_manifest),
+    )?;
 
     if dry_run {
         let mut buf = String::from("");
@@ -612,8 +636,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                         buf = buf + &format!("{}={}\n", src, dest);
                     }
                 }
-                fs::write(dir.clone() + "/mappings/operator-mapping.txt", buf)
-                    .expect("should write operatir-mapping.txt file");
+                fs_handler(
+                    dir.clone() + "/mappings/operator-mapping.txt",
+                    "write",
+                    Some(buf),
+                )?;
                 log.info(&format!(
                     "created operator mapping file in folder {}",
                     dir.clone() + &"/mappings/",

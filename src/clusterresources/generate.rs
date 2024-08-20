@@ -125,13 +125,10 @@ impl GenerateClusterResources {
 
     pub fn untar_metadata(&self, log: &Logging) -> Result<(), MirrorError> {
         // read the tar file
-        log.info(&format!(
-            "reading from untarred contents {}",
-            &self.from_dir
-        ));
+        log.ex(&format!("processing metadata tar {}", &self.from_dir));
         let data = std::fs::File::open(&self.from_dir);
         if data.is_ok() {
-            let f_res = fs::create_dir_all("tmp-metadata");
+            let f_res = fs_handler("tmp-metadata".to_string(), "create_dir", None);
             if f_res.is_ok() {
                 let mut archive = Archive::new(data.unwrap());
                 for (_i, file) in archive.entries().unwrap().enumerate() {
@@ -143,7 +140,7 @@ impl GenerateClusterResources {
                         let res = x.unpack(format!("{}/{}", "tmp-metadata", op_path.clone()));
                         if res.is_err() {
                             let err = MirrorError::new(&format!(
-                                "accessing archive entries {:?}",
+                                "accessing archive entries {}",
                                 res.err().unwrap().to_string().to_lowercase()
                             ));
                             return Err(err);
@@ -152,14 +149,14 @@ impl GenerateClusterResources {
                 }
             } else {
                 let err = MirrorError::new(&format!(
-                    "creating temp archive directory {:?}",
+                    "creating temp archive directory {}",
                     f_res.err().unwrap().to_string().to_lowercase()
                 ));
                 return Err(err);
             }
         } else {
             let err = MirrorError::new(&format!(
-                "reading archive {:?}",
+                "reading archive {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
             return Err(err);
@@ -171,7 +168,7 @@ impl GenerateClusterResources {
         let res = fs::remove_dir_all("tmp-metadata");
         if res.is_err() {
             let err = MirrorError::new(&format!(
-                "cleaning temp dir {:?}",
+                "cleaning temp dir {}",
                 res.err().unwrap().to_string().to_lowercase()
             ));
             return Err(err);
@@ -186,18 +183,21 @@ impl GenerateClusterResources {
         destination: String,
     ) -> Result<(), MirrorError> {
         // write initial header to file
-        fs::create_dir_all(format!("{}/{}", dir, "cluster-resources"))
-            .expect("should create cluster-resource directory");
-        fs::write(
+        fs_handler(
+            format!("{}/{}", dir, "cluster-resources"),
+            "create_dir",
+            None,
+        )?;
+        fs_handler(
             dir.clone() + &"/cluster-resources/idms-image-mirror.yaml",
-            "",
-        )
-        .expect("should write idms yaml");
-        fs::write(
+            "write",
+            Some("".to_string()),
+        )?;
+        fs_handler(
             dir.clone() + &"/cluster-resources/itms-image-mirror.yaml",
-            "",
-        )
-        .expect("should write itms yaml");
+            "write",
+            Some("".to_string()),
+        )?;
 
         let vec_files: Vec<String> = vec![
             "release-image-reference.json".to_string(),
@@ -252,13 +252,13 @@ impl GenerateClusterResources {
                 map_digest.clone(),
                 file.to_string(),
                 "idms".to_string(),
-            );
+            )?;
             process_itms_idms(
                 dir.clone(),
                 map_digest.clone(),
                 file.to_string(),
                 "itms".to_string(),
-            );
+            )?;
         }
         Ok(())
     }
@@ -268,13 +268,13 @@ impl GenerateClusterResources {
         log: &Logging,
         dir: String,
         _catalog: String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), MirrorError> {
         log.info("generating catalogsource");
-        fs::write(
+        fs_handler(
             format!("{}/{}{}", &dir, &"/cluster-resources/cs-", "image.yaml"),
-            "",
-        )
-        .expect("should create catalogsource file");
+            "write",
+            Some("".to_string()),
+        )?;
 
         //self.spec.image = catalog.replace(":", "-").replace(".", "-").to_string();
         //self.api_version = "config.openshift.io/v1".to_string();
@@ -289,9 +289,16 @@ impl GenerateClusterResources {
             .open(format!(
                 "{}/{}{}",
                 &dir, &"/cluster-resources/cs-", "image.yaml"
-            ))
-            .expect("Couldn't open file");
-        serde_yaml::to_writer(file, &self).unwrap();
+            ));
+        if file.is_ok() {
+            serde_yaml::to_writer(file.unwrap(), &self).unwrap();
+        } else {
+            let err = MirrorError::new(&format!(
+                "parsing metatdata {:?}",
+                file.err().unwrap().to_string().to_lowercase()
+            ));
+            return Err(err);
+        }
         Ok(())
     }
 }
@@ -301,7 +308,7 @@ fn process_itms_idms(
     map: HashMap<String, Vec<String>>,
     image_type: String,
     kind: String,
-) {
+) -> Result<(), MirrorError> {
     let mut vec_mirrors: Vec<MirrorSource> = Vec::new();
     for (k, v) in map.clone() {
         let mirrors = MirrorSource {
@@ -338,14 +345,18 @@ fn process_itms_idms(
             "cluster-resources/idms-image-mirror.yaml"
         );
         // append to the file
-        let mut file_ref = OpenOptions::new()
-            .append(true)
-            .open(idms_file)
-            .expect("unable to open file");
-        let final_data = format!("{}\n{}", "---", serialized_data);
-        file_ref
-            .write_all(final_data.as_bytes())
-            .expect("write failed");
+        let file_ref = OpenOptions::new().append(true).open(idms_file);
+        if file_ref.is_ok() {
+            let final_data = format!("{}\n{}", "---", serialized_data);
+            let res = file_ref.unwrap().write_all(final_data.as_bytes());
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "updating idms file {:?}",
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
     } else {
         let its = TagSpec {
             image_tag_mirrors: vec_mirrors,
@@ -365,13 +376,18 @@ fn process_itms_idms(
             "cluster-resources/itms-image-mirror.yaml"
         );
         // append to the file
-        let mut file_ref = OpenOptions::new()
-            .append(true)
-            .open(itms_file)
-            .expect("unable to open file");
-        let final_data = format!("{}\n{}", "---", serialized_data);
-        file_ref
-            .write_all(final_data.as_bytes())
-            .expect("write failed");
+        let file_ref = OpenOptions::new().append(true).open(itms_file);
+        if file_ref.is_ok() {
+            let final_data = format!("{}\n{}", "---", serialized_data);
+            let res = file_ref.unwrap().write_all(final_data.as_bytes());
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "updating itms file {:?}",
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
     }
+    Ok(())
 }

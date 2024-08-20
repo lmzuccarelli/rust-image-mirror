@@ -194,3 +194,57 @@ pub fn parse_json_metadata(
     let root: Vec<MirrorImageInfo> = serde_json::from_str(&data)?;
     Ok(root)
 }
+
+pub fn fs_handler(dir_file: String, mode: &str, data: Option<String>) -> Result<(), MirrorError> {
+    match mode {
+        "create_dir" => {
+            let res = fs::create_dir_all(&dir_file);
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "creating directory {} {}",
+                    dir_file,
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
+        "remove_file" => {
+            let res = fs::remove_file(&dir_file);
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "deleting file {} {}",
+                    dir_file,
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
+        "remove_dir" => {
+            let res = fs::remove_dir_all(&dir_file);
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "deleting directory {} {}",
+                    dir_file,
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
+        "write" => {
+            let res = fs::write(&dir_file, data.unwrap());
+            if res.is_err() {
+                let err = MirrorError::new(&format!(
+                    "deleting directory {} {}",
+                    dir_file,
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
+        _ => {
+            let err = MirrorError::new(&format!("mode {} not supported", dir_file,));
+            return Err(err);
+        }
+    }
+    Ok(())
+}

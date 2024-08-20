@@ -13,6 +13,9 @@ pub struct ImageSetConfig {
 
     #[serde(rename = "mirror")]
     pub mirror: Mirror,
+
+    #[serde(rename = "archiveSize")]
+    pub archive_size: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

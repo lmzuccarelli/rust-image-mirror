@@ -1,4 +1,5 @@
 use crate::error::handler::MirrorError;
+use crate::image::utils::fs_handler;
 use crate::podman::process::*;
 use async_trait::async_trait;
 use custom_logger::*;
@@ -74,7 +75,7 @@ impl GraphDataInterface for ImplGraphDataInterface {
             }
         }
 
-        fs::create_dir_all("container").expect("should create tmp dir");
+        fs_handler("container".to_string(), "create_dir", None)?;
         let data = std::fs::File::open(&tar_gz_file);
         if data.is_ok() {
             let gz = GzDecoder::new(data.unwrap());

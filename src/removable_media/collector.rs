@@ -1,5 +1,6 @@
 use crate::archive::create::MirrorStats;
 use crate::error::handler::MirrorError;
+use crate::image::utils::fs_handler;
 use crate::image::utils::keepalive;
 use custom_logger::*;
 use hex::encode;
@@ -30,121 +31,39 @@ pub async fn removable_media_disk_to_mirror(
     log.hi("removable media collector mode: disk-to-mirror");
 
     // read stats data
-    let data = fs::read_to_string(format!("{}/{}", from.clone(), "mirror-stats.json"));
-    let ms: MirrorStats = serde_json::from_str(data.as_ref().unwrap()).unwrap();
-    let mut blob_count = 1;
-    let mut bar = "% completed    [--------------------------------------------------------------]"
-        .to_string();
-    let amount = ms.blob_count as f32 / 51.0;
-    let update = 10.0 / amount;
+    let ms_data = fs::read_to_string(format!("{}/{}", from.clone(), "mirror-stats.json"));
+    let ms: MirrorStats = serde_json::from_str(ms_data.as_ref().unwrap()).unwrap();
 
-    fs::create_dir_all("tmp-store").expect("should create tmp dir");
-    if !skip_blobs {
-        let data = std::fs::File::open(from.clone() + &"/mirror-blobs.tar".to_string());
-        if data.is_ok() {
-            let mut archive = Archive::new(data.unwrap());
-            log.mid(&bar);
-            for (_i, file) in archive.entries().unwrap().enumerate() {
-                let mut x = file.unwrap();
-                let f = x.path().unwrap();
-                let op_path = f.as_ref().to_string_lossy().to_string();
-                if op_path.clone().contains("/blob/") {
-                    let path = op_path.split("/blob/").nth(0).unwrap();
-                    let digest = op_path.split("/blob/").nth(1).unwrap();
-                    log.debug(&format!("components are {} {}", path, digest));
-                    let res = x.unpack("tmp-store/".to_string() + digest);
-                    if res.is_err() {
-                        log.error(&format!("{:?}", res.err().unwrap()));
-                        continue;
-                    }
-
-                    log.ex(&format!("  pushing blob {}", digest));
-                    // start our spinner
-                    let (keepalive_send, keepalive_recv) = keepalive::channel();
-                    let join_handle = spawn(move || {
-                        let counter = 0;
-                        let spinner = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                        while keepalive_recv.is_alive() {
-                            for x in 0..9 {
-                                println!("\x1b[1A \x1b[38C{}", spinner[x]);
-                                sleep(Duration::from_millis(50));
-                            }
-                        }
-                        counter
-                    });
-
-                    let req_res = process_blob(
-                        log,
-                        "tmp-store".to_string(),
-                        skip_verify,
-                        digest.to_string(),
-                        destination.clone(),
-                        path.to_string(),
-                        "".to_string(),
-                    )
-                    .await;
-                    if req_res.is_err() {
-                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
-                        log.error(&format!(
-                            "{:}",
-                            req_res.err().unwrap().to_string().to_lowercase()
-                        ));
-                        process::exit(1);
-                    }
-                    drop(keepalive_send);
-                    let _ = join_handle.join().unwrap();
-                    println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-                    fs::remove_file("tmp-store/".to_string() + digest)
-                        .expect("should delete tmp file");
-                    blob_count += 1;
-                    if blob_count % 10 == 0 {
-                        bar = bar.replacen("-", "#", update.round() as usize + 1);
-                        log.mid(&bar);
-                    }
-                }
-            }
-            bar = bar.replacen("-", "#", 15);
-            log.mid(&bar);
-        } else {
-            log.error(&format!(
-                "reading mirroror-blobs.tar {:}",
-                data.err().unwrap().to_string().to_lowercase()
-            ));
-            process::exit(1);
-        }
-    }
-
-    // open the metadata tar file
-    let mut manifest_count = 1;
+    // first check if we have manifests (using http HEAD)
+    // open the manifests tar file
     let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
-    let mut bar = "% completed    [--------------------------------------------------------------]"
-        .to_string();
-    let amount = ms.manifest_count as f32 / 51.0;
-    let update = 20.0 / amount;
+    let mut vec_blobs: Vec<String> = Vec::new();
+    let mut vec_manifests: Vec<String> = Vec::new();
 
     if data.is_ok() {
+        log.hi(&format!("checking {} remote manifests", ms.manifest_count));
         let mut archive = Archive::new(data.unwrap());
-        log.mid(&bar);
         for (_i, file) in archive.entries().unwrap().enumerate() {
             let f = file.as_ref().unwrap().path().unwrap();
             let name = f.file_name();
             if name.is_some() {
                 let op_path = f.as_ref().to_string_lossy().to_string();
-                let manifest = &mut "".to_string();
-                let mut ex = file.unwrap();
-                let res = ex.read_to_string(manifest);
-                if res.is_err() {
-                    log.error(&format!("{:#?}", res.err().unwrap()));
-                    process::exit(1);
-                }
-                let mfst = parse_json_manifest_operator(manifest.to_string());
-                log.trace(&format!("mfst struct {:?}", mfst));
                 if op_path.contains(".json") {
+                    let mnfst = &mut "".to_string();
+                    let mut ex = file.unwrap();
+                    let res = ex.read_to_string(mnfst);
+                    if res.is_err() {
+                        log.error(&format!("{:#?}", res.err().unwrap()));
+                        process::exit(1);
+                    }
+                    let manifest = parse_json_manifest_operator(mnfst.to_string());
                     let path = op_path.split("/digest/").nth(0).unwrap();
                     let sha = op_path.split("/digest/").nth(1).unwrap();
-                    let mut sha_clean = sha.split("-").nth(0).unwrap();
+                    let mut sha_clean = sha.split("-").nth(0).unwrap().to_string();
                     if !sha.contains("sha256:") {
-                        sha_clean = sha.split(".json").nth(0).unwrap();
+                        sha_clean = sha.split(".json").nth(0).unwrap().to_string();
+                    } else {
+                        sha_clean = sha_clean.to_string().replace(":", "-").to_string();
                     }
                     let splitter = match op_path.clone() {
                         x if x.contains("operator") => "operator/".to_string(),
@@ -153,11 +72,10 @@ pub async fn removable_media_disk_to_mirror(
                         _ => "none".to_string(),
                     };
                     let ns = path.split(&splitter).nth(1).unwrap();
-                    log.ex(&format!("  pushing manifest {}", ns));
+
                     if res.is_ok() {
-                        let req_res = process_manifests(
+                        let req_res = check_manifest(
                             log,
-                            mfst.unwrap(),
                             destination.clone(),
                             ns.to_string(),
                             sha_clean.to_string(),
@@ -165,40 +83,243 @@ pub async fn removable_media_disk_to_mirror(
                         )
                         .await;
                         if req_res.is_err() {
-                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
-                            log.error(&format!(
-                                "{:?}",
-                                req_res.err().unwrap().to_string().to_lowercase()
-                            ));
-                            process::exit(1);
+                            // build the missing blobs
+                            let m = manifest.as_ref().unwrap();
+                            for layer in m.clone().layers.unwrap().iter() {
+                                let blob =
+                                    layer.digest.split("sha256:").nth(1).unwrap().to_string();
+                                if !vec_blobs.contains(&blob) {
+                                    vec_blobs.insert(0, blob.clone());
+                                }
+                            }
+                            // add the config
+                            let cfg_blob = m
+                                .clone()
+                                .config
+                                .unwrap()
+                                .digest
+                                .split("sha256:")
+                                .nth(1)
+                                .unwrap()
+                                .to_string();
+                            if !vec_blobs.contains(&cfg_blob) {
+                                vec_blobs.insert(0, cfg_blob.clone());
+                            }
+                            vec_manifests.insert(0, op_path.clone());
                         }
-                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-                        manifest_count += 1;
-                        if manifest_count % 20 == 0 {
-                            bar = bar.replacen("-", "#", update.round() as usize + 1);
-                            log.mid(&bar);
-                        }
-                    } else {
-                        println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
-                        log.error(&format!(
-                            "{:?}",
-                            res.err().unwrap().to_string().to_lowercase()
-                        ));
-                        process::exit(1);
                     }
                 }
             }
         }
-        bar = bar.replacen("-", "#", 15);
-        log.mid(&bar);
-    } else {
-        log.error(&format!(
-            "reading mirror-manifest.tar {:?}",
-            data.err().unwrap().to_string().to_lowercase()
-        ));
-        process::exit(1);
     }
-    fs::remove_dir_all("tmp-store").expect("should clean up temp folders");
+
+    log.debug(&format!("missing blobs {:#?}", vec_blobs));
+    log.debug(&format!("missing manifests {:#?}", vec_manifests));
+
+    if vec_blobs.len() > 0 {
+        let mut blob_count = 1;
+        let bar = "% completed    [--------------------------------------------------------------]"
+            .to_string();
+        let per_position = vec_blobs.len() as f32 / 61.0;
+        fs_handler("tmp-store".to_string(), "create_dir", None)?;
+
+        if !skip_blobs {
+            log.hi(&format!("uploading {} blobs", vec_blobs.len()));
+            let tars = fs::read_dir(from.clone());
+            if tars.is_ok() {
+                log.mid(&bar);
+                for file in tars.unwrap().into_iter() {
+                    let tar_file = file.as_ref().unwrap().path();
+                    if tar_file.is_file() {
+                        let blobs_tar = tar_file.to_string_lossy().to_string();
+                        if blobs_tar.contains("mirror-blobs") {
+                            let data = std::fs::File::open(blobs_tar);
+                            if data.is_ok() {
+                                let mut archive = Archive::new(data.unwrap());
+                                for (_i, file) in archive.entries().unwrap().enumerate() {
+                                    let mut x = file.unwrap();
+                                    let f = x.path().unwrap();
+                                    let op_path = f.as_ref().to_string_lossy().to_string();
+                                    if op_path.clone().contains("/blob/") {
+                                        let path = op_path.split("/blob/").nth(0).unwrap();
+                                        let digest = op_path.split("/blob/").nth(1).unwrap();
+                                        if vec_blobs.contains(&digest.to_string()) {
+                                            let res = x.unpack("tmp-store/".to_string() + digest);
+                                            if res.is_err() {
+                                                log.error(&format!("{:?}", res.err().unwrap()));
+                                                continue;
+                                            }
+                                            log.ex(&format!("  pushing blob {}", digest));
+                                            // start our spinner
+                                            let (keepalive_send, keepalive_recv) =
+                                                keepalive::channel();
+                                            let join_handle = spawn(move || {
+                                                let counter = 0;
+                                                let spinner = vec![
+                                                    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
+                                                    "⠏",
+                                                ];
+                                                while keepalive_recv.is_alive() {
+                                                    for x in 0..9 {
+                                                        println!("\x1b[1A \x1b[38C{}", spinner[x]);
+                                                        sleep(Duration::from_millis(50));
+                                                    }
+                                                }
+                                                counter
+                                            });
+
+                                            let req_res = process_blob(
+                                                log,
+                                                "tmp-store".to_string(),
+                                                skip_verify,
+                                                digest.to_string(),
+                                                destination.clone(),
+                                                path.to_string(),
+                                                "".to_string(),
+                                            )
+                                            .await;
+                                            if req_res.is_err() {
+                                                println!(
+                                                    "\x1b[1A \x1b[38C{}",
+                                                    "\x1b[1;91m✗\x1b[0m"
+                                                );
+                                                log.error(&format!(
+                                                    "{}",
+                                                    req_res
+                                                        .err()
+                                                        .unwrap()
+                                                        .to_string()
+                                                        .to_lowercase()
+                                                ));
+                                                process::exit(1);
+                                            }
+                                            drop(keepalive_send);
+                                            let _ = join_handle.join().unwrap();
+                                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
+                                            fs_handler(
+                                                "tmp-store/".to_string() + digest,
+                                                "remove_file",
+                                                None,
+                                            )?;
+                                            blob_count += 1;
+                                            if blob_count % 10 == 0 {
+                                                let update = blob_count as f32 / per_position;
+                                                let new_bar =
+                                                    bar.replacen("-", "#", update.floor() as usize);
+                                                log.mid(&new_bar);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                log.error(&format!(
+                                    "reading mirroror-blobs.tar {:}",
+                                    data.err().unwrap().to_string().to_lowercase()
+                                ));
+                                process::exit(1);
+                            }
+                        }
+                    }
+                }
+                let new_bar = bar.replacen("-", "#", 62);
+                log.mid(&new_bar);
+            } else {
+                log.error(&format!(
+                    "reading mirror-blobs tar files {}",
+                    tars.err().unwrap().to_string().to_lowercase()
+                ));
+                process::exit(1);
+            }
+        }
+        fs_handler("tmp-store/".to_string(), "remove_dir", None)?;
+
+        // open the metadata tar file
+        let mut manifest_count = 1;
+        let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
+        let bar = "% completed    [--------------------------------------------------------------]"
+            .to_string();
+        let per_position = vec_manifests.len() as f32 / 61.0;
+
+        if data.is_ok() {
+            log.hi(&format!("uploading {} manifests", vec_manifests.len()));
+            let mut archive = Archive::new(data.unwrap());
+            log.mid(&bar);
+            for (_i, file) in archive.entries().unwrap().enumerate() {
+                let f = file.as_ref().unwrap().path().unwrap();
+                let name = f.file_name();
+                let op_path = f.as_ref().to_string_lossy().to_string();
+                if name.is_some() {
+                    if op_path.contains(".json") {
+                        if vec_manifests.contains(&op_path) {
+                            let manifest = &mut "".to_string();
+                            let mut ex = file.unwrap();
+                            let res = ex.read_to_string(manifest);
+                            if res.is_err() {
+                                log.error(&format!("{:#?}", res.err().unwrap()));
+                                process::exit(1);
+                            }
+                            let mfst = parse_json_manifest_operator(manifest.to_string());
+                            let path = op_path.split("/digest/").nth(0).unwrap();
+                            let sha = op_path.split("/digest/").nth(1).unwrap();
+                            let mut sha_clean = sha.split("-").nth(0).unwrap();
+                            if !sha.contains("sha256:") {
+                                sha_clean = sha.split(".json").nth(0).unwrap();
+                            }
+                            let splitter = match op_path.clone() {
+                                x if x.contains("operator") => "operator/".to_string(),
+                                x if x.contains("release") => "release/".to_string(),
+                                x if x.contains("additional") => "additional/".to_string(),
+                                _ => "none".to_string(),
+                            };
+                            let ns = path.split(&splitter).nth(1).unwrap();
+                            log.ex(&format!("  pushing manifest {}", ns));
+                            if res.is_ok() {
+                                let req_res = process_manifests(
+                                    log,
+                                    mfst.unwrap(),
+                                    destination.clone(),
+                                    ns.to_string(),
+                                    sha_clean.to_string(),
+                                    "".to_string(),
+                                )
+                                .await;
+                                if req_res.is_err() {
+                                    println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
+                                    log.error(&format!(
+                                        "{:?}",
+                                        req_res.err().unwrap().to_string().to_lowercase()
+                                    ));
+                                    process::exit(1);
+                                }
+                                println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
+                                manifest_count += 1;
+                                if manifest_count % 10 == 0 {
+                                    let update = manifest_count as f32 / per_position;
+                                    let new_bar = bar.replacen("-", "#", update.floor() as usize);
+                                    log.mid(&new_bar);
+                                }
+                            } else {
+                                println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
+                                log.error(&format!(
+                                    "{:?}",
+                                    res.err().unwrap().to_string().to_lowercase()
+                                ));
+                                process::exit(1);
+                            }
+                        }
+                    }
+                }
+            }
+            let new_bar = bar.replacen("-", "#", 62);
+            log.mid(&new_bar);
+        } else {
+            log.error(&format!(
+                "reading mirror-manifest.tar {:?}",
+                data.err().unwrap().to_string().to_lowercase()
+            ));
+            process::exit(1);
+        }
+    }
     Ok(())
 }
 
@@ -384,6 +505,53 @@ pub async fn process_manifests(
             "upload manifest failed with status {:#?} : {:#?}",
             result.status(),
             result.text().await.unwrap().to_string()
+        ));
+        Err(err)
+    } else {
+        Ok(String::from("ok"))
+    }
+}
+
+pub async fn check_manifest(
+    log: &Logging,
+    url: String,
+    namespace: String,
+    tag_digest: String,
+    token: String,
+) -> Result<String, MirrorError> {
+    let client = Client::new();
+    let client = client.clone();
+    let header_bearer = format!("Bearer {}", token);
+
+    let head_url = get_destination_registry(
+        url.clone(),
+        namespace.clone(),
+        String::from("http_manifest"),
+    );
+
+    let res_put = client
+        .head(head_url.clone() + &tag_digest.clone())
+        .header(
+            "Content-Type",
+            "application/vnd.docker.distribution.manifest.v2+json",
+        )
+        .header("Accept", "application/json")
+        .header("Authorization", header_bearer)
+        .send()
+        .await;
+
+    let result = res_put.unwrap();
+    log.trace(&format!(
+        "result for manifest {:#?} {} {}",
+        result.status(),
+        namespace,
+        head_url.clone() + &tag_digest
+    ));
+
+    if result.status() != StatusCode::OK {
+        let err = MirrorError::new(&format!(
+            "upload manifest failed with status {}",
+            result.status(),
         ));
         Err(err)
     } else {

@@ -1,12 +1,12 @@
 // use modules
 use crate::additional::collector::*;
 use crate::clusterresources::generate::*;
+use crate::image::utils::fs_handler;
 use crate::operator::collector::*;
 use crate::release::collector::*;
 use clap::Parser;
 use custom_logger::*;
 use mirror_copy::ImplRegistryInterface;
-use std::fs;
 use std::process;
 use tokio;
 
@@ -99,15 +99,23 @@ async fn main() {
     if args.destination.contains("file://") {
         let destination = args.destination.split("file://").nth(1).unwrap();
         log.info(&format!("destination {}", destination));
-        fs::create_dir_all(&format!(
-            "{}/{}",
-            destination,
-            "mirror-metadata".to_string()
-        ))
-        .expect("should create manifests directory");
+        let res = fs_handler(
+            format!("{}/{}", destination, "mirror-metadata".to_string()),
+            "create_dir",
+            None,
+        );
+        if res.is_err() {
+            log.error(&format!("{}", res.err().unwrap().to_string()));
+        }
 
-        fs::create_dir_all(&format!("{}/{}", destination, "mappings".to_string()))
-            .expect("should create mappings directory");
+        let res = fs_handler(
+            format!("{}/{}", destination, "mappings".to_string()),
+            "create_dir",
+            None,
+        );
+        if res.is_err() {
+            log.error(&format!("{}", res.err().unwrap().to_string()));
+        };
 
         // check for release images
         let skip_manifest_check = skip_manifests == "release" || skip_manifests == "all";
@@ -161,8 +169,14 @@ async fn main() {
 
         // finally create tar archive
         if !dry_run && !skip_manifest_check {
+            // archive_size set to 5G
+            let mut archive_size = 1024 * 1024 * 1024 * 5;
+            if isc_config_final.archive_size.is_some() {
+                let size = isc_config_final.archive_size.unwrap();
+                archive_size = 1024 * 1024 * 1024 * size;
+            }
             log.info("creating tar files");
-            let res = create_tar(log, destination.to_string());
+            let res = create_tar(log, destination.to_string(), archive_size);
             if res.is_err() {
                 log.error(&format!("error creating tar {}", res.err().unwrap()));
                 process::exit(1);
@@ -210,17 +224,17 @@ async fn main() {
 
         let gen_res = gcr.generate_idms_itms(log, from.clone(), destination_registry.clone());
         if gen_res.is_err() {
-            log.error(&format!("{:#}", gen_res.err().unwrap()));
+            log.error(&format!("{}", gen_res.err().unwrap().to_string()));
         }
 
         let gen_res = gcr.generate_catalog_source(log, from.clone(), destination_registry);
         if gen_res.is_err() {
-            log.error(&format!("{:#}", gen_res.err().unwrap()));
+            log.error(&format!("{}", gen_res.err().unwrap().to_string()));
         }
 
         let res = gcr.clean_up();
         if res.is_err() {
-            log.error(&format!("{:#}", res.err().unwrap()));
+            log.error(&format!("{}", res.err().unwrap().to_string()));
         }
     }
 }

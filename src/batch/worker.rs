@@ -13,6 +13,8 @@ pub async fn execute_batch(
 ) -> Result<(), MirrorError> {
     let mut futs = FuturesUnordered::new();
     let batch_size = 8;
+    let bar = "% completed    [--------------------------------------------------------------]"
+        .to_string();
 
     // get blobs in batch of 8
     // each future handles get_blobs api call
@@ -24,11 +26,7 @@ pub async fn execute_batch(
         log.trace(&format!("url {}", k));
         let token = get_token(log, registry.to_string()).await;
         let mut count = 0;
-        let amount = v.len() as f32 / 51.0;
-        let update = 10.0 / amount;
-        let mut bar =
-            "% completed    [--------------------------------------------------------------]"
-                .to_string();
+        let per_position = v.len() as f32 / 61.0;
         if token.is_ok() {
             log.info(&format!("downloading {} blobs", v.len()));
             for layer in v.iter() {
@@ -54,8 +52,9 @@ pub async fn execute_batch(
                 }
                 count += 1;
                 if count % 10 == 0 {
-                    bar = bar.replacen("-", "#", update.round() as usize);
-                    log.mid(&bar);
+                    let update = count as f32 / per_position;
+                    let new_bar = bar.replacen("-", "#", update.floor() as usize);
+                    log.mid(&new_bar);
                 }
             }
         } else {
@@ -69,6 +68,8 @@ pub async fn execute_batch(
     // Wait for the remaining to finish.
     while let Some(response) = futs.next().await {
         log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
+        let new_bar = bar.replacen("-", "#", 62);
+        log.mid(&new_bar);
     }
     Ok(())
 }
