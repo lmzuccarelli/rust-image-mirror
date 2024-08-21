@@ -125,7 +125,7 @@ impl GenerateClusterResources {
 
     pub fn untar_metadata(&self, log: &Logging) -> Result<(), MirrorError> {
         // read the tar file
-        log.ex(&format!("processing metadata tar {}", &self.from_dir));
+        log.info(&format!("processing metadata tar {}", &self.from_dir));
         let data = std::fs::File::open(&self.from_dir);
         if data.is_ok() {
             let f_res = fs_handler("tmp-metadata".to_string(), "create_dir", None);

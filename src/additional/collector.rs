@@ -19,6 +19,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
     skip_manifests_check: bool,
     dry_run: bool,
     additional: Vec<Image>,
+    vec_arch: Vec<&str>,
 ) -> Result<(), MirrorError> {
     log.hi("additional images collector mode: mirror-to-disk");
 
@@ -104,9 +105,9 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                     arch.clone(),
                 );
 
-                if !skip_manifests_check {
-                    log.ex(&format!(
-                        "api call : checking arch manifest {:#}",
+                if !skip_manifests_check && !dry_run {
+                    log.mid(&format!(
+                        "api call for arch manifest {:#}",
                         ir_url.registry.clone()
                             + &"/"
                             + &ir_url.namespace.clone()
@@ -267,7 +268,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             let air = parse_json_metadata(data.unwrap());
             if air.is_ok() {
                 for mii in air.unwrap().iter() {
-                    if mii.arch == "amd64" || mii.arch == "x86_64" {
+                    if vec_arch.contains(&mii.arch.as_ref()) {
                         let src = &format!("{}{}", "docker://", mii.reference);
                         let dest = &format!("{}{}@{}", "file://", mii.namespace, mii.digest);
                         buf = buf + &format!("{}={}\n", src, dest);
@@ -278,8 +279,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                     "write",
                     Some(buf),
                 )?;
-                //    .expect("should write additional-mapping.txt file");
-                log.info(&format!(
+                log.mid(&format!(
                     "created additional images mapping file in folder {}",
                     dir.clone() + &"/mappings/",
                 ));

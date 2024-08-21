@@ -28,7 +28,6 @@ mod removable_media;
 
 // use local modules
 use api::schema::*;
-//use clusterresources::*;
 use archive::create::*;
 use config::load::*;
 use removable_media::collector::*;
@@ -41,6 +40,7 @@ async fn main() {
     let level = args.loglevel.unwrap().to_string();
     let skip_manifests = args.skip_manifest_check.unwrap().to_string();
     let dry_run = args.dry_run;
+    let arch = args.architecture.to_string();
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -91,6 +91,19 @@ async fn main() {
         "image set config additional images {:#?}",
         isc_config_final.mirror.additional_images
     ));
+
+    // multi archj support
+    let mut vec_arch: Vec<&str> = Vec::new();
+    if arch == "all" {
+        vec_arch.insert(0, "amd64");
+        vec_arch.insert(0, "arm64");
+        vec_arch.insert(0, "ppc64le");
+        vec_arch.insert(0, "s390x");
+        vec_arch.insert(0, "x86_64");
+    } else {
+        vec_arch = arch.split(",").collect();
+        vec_arch.insert(0, "x86_64");
+    }
 
     // initialize the client request interface
     let reg_con = ImplRegistryInterface {};
@@ -144,6 +157,7 @@ async fn main() {
                 skip_manifest_check,
                 dry_run,
                 isc_config_final.mirror.operators.unwrap(),
+                vec_arch.clone(),
             )
             .await;
             if res.is_err() {
@@ -160,6 +174,7 @@ async fn main() {
                 skip_manifest_check,
                 dry_run,
                 isc_config_final.mirror.additional_images.unwrap(),
+                vec_arch.clone(),
             )
             .await;
             if res.is_err() {
@@ -168,7 +183,7 @@ async fn main() {
         }
 
         // finally create tar archive
-        if !dry_run && !skip_manifest_check {
+        if !dry_run {
             // archive_size set to 5G
             let mut archive_size = 1024 * 1024 * 1024 * 5;
             if isc_config_final.archive_size.is_some() {
@@ -176,9 +191,10 @@ async fn main() {
                 archive_size = 1024 * 1024 * 1024 * size;
             }
             log.info("creating tar files");
-            let res = create_tar(log, destination.to_string(), archive_size);
+            vec_arch.insert(0, "all");
+            let res = create_tar(log, destination.to_string(), archive_size, vec_arch);
             if res.is_err() {
-                log.error(&format!("error creating tar {}", res.err().unwrap()));
+                log.error(&format!("{}", res.err().unwrap()));
                 process::exit(1);
             }
         }
@@ -208,7 +224,7 @@ async fn main() {
         )
         .await;
         if res.is_err() {
-            log.error(&format!("error creating tar {}", res.err().unwrap()));
+            log.error(&format!("{}", res.err().unwrap()));
             process::exit(1);
         }
 

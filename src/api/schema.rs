@@ -6,19 +6,19 @@ use serde_derive::{Deserialize, Serialize};
 #[derive(Parser, Debug)]
 #[command(name = "rust-image-mirror")]
 #[command(author = "Luigi Mario Zuccarelli <luzuccar@redhat.com>")]
-#[command(version = "0.2.0")]
+#[command(version = "0.3.0")]
 #[command(about = "Used to mirror redhat specific release, operator and additional images", long_about = None)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// config file to use
-    #[arg(short, long, value_name = "config", default_value = "")]
+    #[arg(short, long, value_name = "config", default_value = "none")]
     pub config: Option<String>,
 
     /// set the loglevel. Valid arguments are info, debug, trace
     #[arg(value_enum, long, value_name = "loglevel", default_value = "info")]
     pub loglevel: Option<String>,
 
-    /// set the destination. Valid prefix are docker:// or file://
+    /// set the destination. Valid prefix's are docker:// or file://
     #[arg(
         short,
         long,
@@ -38,7 +38,7 @@ pub struct Cli {
     pub dry_run: bool,
 
     /// set the skip-manifest-check flag. Valid arguments are none, release, operators, additional,
-    /// release-operators
+    /// all
     #[arg(
         value_enum,
         long,
@@ -47,15 +47,10 @@ pub struct Cli {
     )]
     pub skip_manifest_check: Option<String>,
 
-    /// set the skip-gen-declconfig flag.
-    /// release-operators
-    #[arg(
-        short,
-        long,
-        value_name = "skip-gen-declconfig",
-        default_value = "false"
-    )]
-    pub skip_gen_declconfig: bool,
+    /// set the architecture types to mirror valid values are arm64,amd64,ppc64le,s390x,all
+    /// you can combine them by adding a comma i.e arm64,amd64 as an example
+    #[arg(short, long, value_name = "architecture", default_value = "amd64")]
+    pub architecture: String,
 
     /// set the skip-blob-upload flag.
     #[arg(short, long, value_name = "skip-blob-upload", default_value = "false")]

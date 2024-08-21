@@ -106,159 +106,164 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         let index_image_ref = convert_release_image_index(log, release.name.clone());
         log.debug(&format!("image refs {:#?}", index_image_ref.clone()));
         let token = get_token(log, index_image_ref.clone().registry).await;
-        if token.is_err() {
-            // if token is not found or expired
-            // there is no use continuing
-            log.error(&format!("{:#?}", token.err().unwrap()));
-            process::exit(1);
-        }
-
-        // construct manifest api call
-        let manifest_url = &format!(
-            "https://{}/v2/{}/{}/manifests/{}",
-            index_image_ref.registry,
-            index_image_ref.namespace,
-            index_image_ref.name,
+        let mut manifest: String = String::new();
+        let release_manifest_file = format!(
+            "{}/{}/{}/manifest.json",
+            dir.clone(),
+            "ocp-release",
             index_image_ref.version
         );
-        log.mid(&format!("api call for manifest {}", release.name.clone()));
 
-        let manifest = reg_con
-            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
-            .await;
+        if !skip_manifests_check {
+            if token.is_err() {
+                // if token is not found or expired
+                // there is no use continuing
+                log.error(&format!("{:#?}", token.err().unwrap()));
+                process::exit(1);
+            }
+            // construct manifest api call
+            let manifest_url = &format!(
+                "https://{}/v2/{}/{}/manifests/{}",
+                index_image_ref.registry,
+                index_image_ref.namespace,
+                index_image_ref.name,
+                index_image_ref.version
+            );
+            log.mid(&format!("api call for manifest {}", release.name.clone()));
 
-        if manifest.is_ok() {
-            // multi arch
-            // in the cli ensure that only multi is entered
-            // and no other platform architecture
-            if release.name.clone().contains("multi") {
-                let manifest_list = parse_json_manifestlist(manifest.unwrap().clone());
-                if manifest_list.is_ok() {
-                    for mfst in manifest_list.unwrap().manifests.iter() {
-                        // contruct api call for manifests
-                        let manifest_url = &format!(
-                            "https://{}/v2/{}/{}/manifests/{}",
-                            index_image_ref.clone().registry,
-                            index_image_ref.clone().namespace,
-                            index_image_ref.clone().name,
-                            mfst.digest.as_ref().unwrap()
-                        );
-                        log.info(&format!(
-                            "checking multi arch manifest for {}",
-                            release.name.clone() + "/" + mfst.digest.as_ref().unwrap()
-                        ));
-
-                        let original_ref = format!(
-                            "{}-{}",
-                            release.name.clone().split("-multi").nth(0).unwrap(),
-                            mfst.platform.as_ref().unwrap().architecture
-                        );
-
-                        let manifest = reg_con
-                            .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
-                            .await;
-
-                        if manifest.is_ok() {
-                            // create the directory to store manifests in
-                            let manifest_json_dir = &format!(
-                                "{}/{}/{}-{}",
-                                dir.clone(),
-                                "ocp-release",
-                                index_image_ref.clone().version.split("-").nth(0).unwrap(),
-                                mfst.platform.as_ref().unwrap().architecture,
-                            );
-                            log.info(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
-                            fs_handler(manifest_json_dir.to_string(), "create_dir", None)?;
-                            let mfst_file = format!("{}/manifest.json", manifest_json_dir);
-                            // check if it exists first
-                            let exists = Path::new(&mfst_file).exists();
-                            if exists {
-                                let msft_on_disk = fs::read_to_string(mfst_file.clone());
-                                if msft_on_disk.is_ok() {
-                                    if msft_on_disk.unwrap()
-                                        != manifest.as_ref().unwrap().to_string()
-                                    {
-                                        fs_handler(
-                                            mfst_file.clone(),
-                                            "write",
-                                            Some(manifest.unwrap().to_string()),
-                                        )?;
-                                        let release_image_info = ReleaseImageInfo {
-                                            file: mfst_file.clone(),
-                                            original_ref: original_ref.clone(),
-                                        };
-                                        vec_process_manifests.insert(0, release_image_info);
-                                    }
-                                }
-                            } else {
-                                fs_handler(
-                                    mfst_file.clone().to_string(),
-                                    "write",
-                                    Some(manifest.unwrap().to_string()),
-                                )?;
-                                let release_image_info = ReleaseImageInfo {
-                                    file: mfst_file.clone(),
-                                    original_ref: original_ref.clone(),
-                                };
-                                vec_process_manifests.insert(0, release_image_info);
-                            }
-                        } else {
-                            let err = MirrorError::new(&format!(
-                                "release servere multi arch  {}",
-                                manifest.err().unwrap().to_string().to_lowercase()
-                            ));
-                            return Err(err);
+            let res = reg_con
+                .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
+                .await;
+            if res.is_ok() {
+                let manifest_mem = res.unwrap();
+                let mut exists = Path::new(&release_manifest_file.clone()).exists();
+                if exists {
+                    let res_data = fs::read_to_string(release_manifest_file.clone());
+                    if res_data.is_ok() {
+                        if manifest_mem != res_data.unwrap() {
+                            fs_handler(
+                                release_manifest_file.clone(),
+                                "write",
+                                Some(manifest_mem.clone()),
+                            )?;
+                            exists = false;
                         }
+                    } else {
+                        exists = false
                     }
                 }
-            } else {
-                // standard manifest
-                let manifest_json_dir = &format!(
-                    "{}/{}/{}",
-                    dir.clone(),
-                    "ocp-release",
-                    index_image_ref.clone().version,
-                );
-                log.debug(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
-                fs_handler(manifest_json_dir.to_string(), "create_dir", None)?;
-                let mfst_file = format!("{}/manifest.json", manifest_json_dir);
-                let msft_on_disk = fs::read_to_string(mfst_file.clone());
-                // check if it exists first
-                let exists = Path::new(&mfst_file).exists();
-                if exists {
-                    if msft_on_disk.is_ok() {
-                        if msft_on_disk.unwrap() != manifest.as_ref().unwrap().to_string() {
-                            fs_handler(
-                                mfst_file.clone().to_string(),
-                                "write",
-                                Some(manifest.unwrap().clone().to_string()),
-                            )?;
-                            let release_image_info = ReleaseImageInfo {
-                                file: mfst_file.clone(),
-                                original_ref: release.name.clone(),
-                            };
-                            vec_process_manifests.insert(0, release_image_info);
-                        }
-                    }
-                } else {
-                    fs_handler(
-                        mfst_file.clone().to_string(),
-                        "write",
-                        Some(manifest.unwrap().clone().to_string()),
-                    )?;
+                if !exists {
+                    manifest = manifest_mem.clone();
                     let release_image_info = ReleaseImageInfo {
-                        file: mfst_file.clone(),
+                        file: release_manifest_file.clone(),
                         original_ref: release.name.clone(),
                     };
                     vec_process_manifests.insert(0, release_image_info);
                 }
+            } else {
+                let err = MirrorError::new(&format!(
+                    "release api call  {}",
+                    res.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
             }
         } else {
-            let err = MirrorError::new(&format!(
-                "release servere  {}",
-                manifest.err().unwrap().to_string().to_lowercase()
-            ));
-            return Err(err);
+            // read from disk
+            let res_data = fs::read_to_string(release_manifest_file.clone());
+            if res_data.is_ok() {
+                manifest = res_data.unwrap();
+            } else {
+                let err = MirrorError::new(&format!(
+                    "release reading manifest  {}",
+                    res_data.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+        }
+
+        // multi arch
+        // in the cli ensure that only multi is entered
+        // and no other platform architecture
+        if release.name.clone().contains("multi") {
+            let manifest_list = parse_json_manifestlist(manifest.clone());
+            if manifest_list.is_ok() {
+                for mfst in manifest_list.unwrap().manifests.iter() {
+                    // contruct api call for manifests
+                    let manifest_url = &format!(
+                        "https://{}/v2/{}/{}/manifests/{}",
+                        index_image_ref.clone().registry,
+                        index_image_ref.clone().namespace,
+                        index_image_ref.clone().name,
+                        mfst.digest.as_ref().unwrap()
+                    );
+                    log.info(&format!(
+                        "checking multi arch manifest for {}",
+                        release.name.clone() + "/" + mfst.digest.as_ref().unwrap()
+                    ));
+
+                    let original_ref = format!(
+                        "{}-{}",
+                        release.name.clone().split("-multi").nth(0).unwrap(),
+                        mfst.platform.as_ref().unwrap().architecture
+                    );
+
+                    let inner_manifest = reg_con
+                        .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
+                        .await;
+
+                    if inner_manifest.is_ok() {
+                        // create the directory to store manifests in
+                        let manifest_json_dir = &format!(
+                            "{}/{}/{}-{}",
+                            dir.clone(),
+                            "ocp-release",
+                            index_image_ref.clone().version.split("-").nth(0).unwrap(),
+                            mfst.platform.as_ref().unwrap().architecture,
+                        );
+                        log.info(&format!("manifest_json_dir {}", manifest_json_dir.clone()));
+                        fs_handler(manifest_json_dir.to_string(), "create_dir", None)?;
+                        let mfst_file = format!("{}/manifest.json", manifest_json_dir);
+                        // check if it exists first
+                        let exists = Path::new(&mfst_file).exists();
+                        if exists {
+                            let msft_on_disk = fs::read_to_string(mfst_file.clone());
+                            if msft_on_disk.is_ok() {
+                                if msft_on_disk.unwrap()
+                                    != inner_manifest.as_ref().unwrap().to_string()
+                                {
+                                    fs_handler(
+                                        mfst_file.clone(),
+                                        "write",
+                                        Some(inner_manifest.unwrap().to_string()),
+                                    )?;
+                                    let release_image_info = ReleaseImageInfo {
+                                        file: mfst_file.clone(),
+                                        original_ref: original_ref.clone(),
+                                    };
+                                    vec_process_manifests.insert(0, release_image_info);
+                                }
+                            }
+                        } else {
+                            fs_handler(
+                                mfst_file.clone().to_string(),
+                                "write",
+                                Some(inner_manifest.unwrap().to_string()),
+                            )?;
+                            let release_image_info = ReleaseImageInfo {
+                                file: mfst_file.clone(),
+                                original_ref: original_ref.clone(),
+                            };
+                            vec_process_manifests.insert(0, release_image_info);
+                        }
+                    } else {
+                        let err = MirrorError::new(&format!(
+                            "release servere multi arch  {}",
+                            inner_manifest.err().unwrap().to_string().to_lowercase()
+                        ));
+                        return Err(err);
+                    }
+                }
+            }
         }
 
         if vec_process_manifests.clone().len() == 0 {
@@ -410,7 +415,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         let rm = res_manifest_in_mem.unwrap();
                         for img in rm.clone().spec.tags.iter() {
                             let image_ref = parse_image(log, img.clone().from.name);
-                            if !skip_manifests_check {
+                            if !skip_manifests_check && !dry_run {
                                 let manifest_url = &format!(
                                     "https://{}/v2/{}/{}/manifests/{}",
                                     image_ref.registry,
@@ -480,7 +485,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             // file is correct and parsable
                             let md = fs::read_to_string(mnfst_on_disk.clone());
                             if md.is_ok() {
-                                log.ex(&format!("checking manifest {}", img.name));
+                                log.info(&format!("checking manifest {}", img.name));
                                 log.debug(&format!("sha {} ", image_ref.version));
                                 let op_manifest =
                                     parse_json_manifest_operator(md.unwrap()).unwrap();
@@ -554,9 +559,9 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         }
     }
 
-    if releases.graph.is_some() {
+    if releases.graph.is_some() && !dry_run {
         if releases.graph.unwrap().contains("true") {
-            log.info("build graph data");
+            log.mid("build graph data");
             let g_impl = ImplGraphDataInterface {};
             let res = g_impl.build_graph_image(log, dir.clone()).await;
             if res.is_ok() {
@@ -614,7 +619,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     "write",
                     Some(buf),
                 )?;
-                log.info(&format!(
+                log.mid(&format!(
                     "created release mapping file in folder {}",
                     dir.clone() + &"/mappings/",
                 ));

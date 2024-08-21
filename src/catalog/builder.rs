@@ -1,6 +1,7 @@
 use crate::error::handler::MirrorError;
 use crate::image::utils::fs_handler;
 use crate::image::utils::{parse_image, process_fb_image};
+use crate::podman::process::*;
 use crate::MirrorImageInfo;
 use custom_logger::*;
 use mirror_catalog_index::find_dir;
@@ -8,7 +9,6 @@ use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
-use std::process::Command;
 
 #[derive(Serialize, Deserialize)]
 pub struct CatalogHeader {
@@ -61,7 +61,25 @@ impl CatalogBuildInterface for ImplCatalogBuildInterface {
                 "rebuild-catalog.containerfile",
             )
             .expect("should copy containerfile");
-            // TODO: should iterate over each catalog
+
+            let data = fs::read_to_string("rebuild-catalog.containerfile");
+            if data.is_ok() {
+                let updated = data
+                    .unwrap()
+                    .replacen("{{ catalog }}", &catalog.catalog.clone(), 2);
+                fs_handler(
+                    "rebuild-catalog.containerfile".to_string(),
+                    "write",
+                    Some(updated.to_string()),
+                )?;
+            } else {
+                let err = MirrorError::new(&format!(
+                    "updating rebuild-catalog containerfile {}",
+                    data.err().unwrap().to_string().to_lowercase()
+                ));
+                return Err(err);
+            }
+
             let build = build(
                 log,
                 catalog.catalog.clone(),
@@ -77,7 +95,7 @@ impl CatalogBuildInterface for ImplCatalogBuildInterface {
             // finally save blobs and manifests to folders and data structure
             let res_fbi = process_fb_image(
                 base_dir.clone(),
-                ir.name,
+                ir.name.clone(),
                 ir.namespace,
                 ir.version,
                 "operator".to_string(),
@@ -86,7 +104,7 @@ impl CatalogBuildInterface for ImplCatalogBuildInterface {
                 return Err(res_fbi.err().unwrap());
             }
             vec_mii.insert(0, res_fbi.unwrap().clone());
-            cleanup(log);
+            cleanup(log, ir.name);
         }
         Ok(vec_mii)
     }
@@ -117,7 +135,7 @@ async fn create_filtered_config(
     let f = File::open(&file_name);
     if f.is_err() {
         let err = MirrorError::new(&format!(
-            "reading declarative config {:?}",
+            "reading declarative config {}",
             f.err().unwrap().to_string().to_lowercase()
         ));
         return Err(err);
@@ -173,64 +191,12 @@ async fn create_filtered_config(
     Ok(())
 }
 
-fn build(log: &Logging, image: String, container_file: String) -> Result<(), MirrorError> {
-    let output = Command::new("podman")
-        .arg("build")
-        //.arg("-q")
-        .arg("-t")
-        .arg(&image)
-        .arg("-f")
-        .arg(&container_file)
-        .output()
-        .expect("failed to execute process");
-
-    if output.status.success() {
-        log.info("build image completed successfully");
-    }
-    log.debug(&format!(
-        "stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    ));
-    log.debug(&format!(
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    ));
-
-    assert!(output.status.success());
-    Ok(())
-}
-
-fn save(log: &Logging, image: String, output_file: String) -> Result<(), MirrorError> {
-    let output = Command::new("podman")
-        .arg("save")
-        .arg("--format")
-        .arg("docker-dir")
-        //.arg("-m")
-        .arg("-o")
-        .arg(output_file)
-        .arg(image)
-        .output()
-        .expect("failed to execute process");
-
-    if output.status.success() {
-        log.info("save image (v2d2) to disk completed successfully");
-    }
-    log.debug(&format!(
-        "stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    ));
-    log.debug(&format!(
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    ));
-
-    assert!(output.status.success());
-    Ok(())
-}
-
-fn cleanup(log: &Logging) {
+fn cleanup(log: &Logging, catalog: String) {
     // finally cleanup
-    //fs_handler("configs".to-string(),"remove_dir",None)?;
+    let res_cfg = fs_handler("configs".to_string(), "remove_dir", None);
+    if res_cfg.is_err() {
+        log.error(&format!("{}", res_cfg.err().unwrap().to_string()));
+    }
     let res = fs_handler(
         "rebuild-catalog.containerfile".to_string(),
         "remove_file",
@@ -239,8 +205,10 @@ fn cleanup(log: &Logging) {
     if res.is_err() {
         log.error(&format!("{}", res.err().unwrap().to_string()));
     }
-    // TODO: copy blobs and manifest
-    //fs_handler("redhat-catalog".to-string(),"remove_dir",None)?;
+    let res_ctlg = fs_handler(catalog, "remove_dir", None);
+    if res_ctlg.is_err() {
+        log.error(&format!("{}", res_ctlg.err().unwrap().to_string()));
+    }
 }
 
 // parse the manifest json for operator indexes only

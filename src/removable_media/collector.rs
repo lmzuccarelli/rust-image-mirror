@@ -41,7 +41,7 @@ pub async fn removable_media_disk_to_mirror(
     let mut vec_manifests: Vec<String> = Vec::new();
 
     if data.is_ok() {
-        log.hi(&format!("checking {} remote manifests", ms.manifest_count));
+        log.ex(&format!("checking {} remote manifests", ms.manifest_count));
         let mut archive = Archive::new(data.unwrap());
         for (_i, file) in archive.entries().unwrap().enumerate() {
             let f = file.as_ref().unwrap().path().unwrap();

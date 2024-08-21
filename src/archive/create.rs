@@ -26,20 +26,17 @@ pub struct MirrorStats {
     pub metadata_size: u64,
 }
 
-pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<bool, MirrorError> {
-    // setup blobs temp dir
-    //let tmp_blobs_dir = TempDir::new("tmp-blobs-tar");
-    //let blobs_dir = tmp_blobs_dir.as_ref().unwrap();
+pub fn create_tar(
+    log: &Logging,
+    base_dir: String,
+    archive_size: i64,
+    vec_arch: Vec<&str>,
+) -> Result<bool, MirrorError> {
+    // create the relevant directories
     fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
 
-    // setup manifest temp dir
-    //let tmp_manifest_dir = TempDir::new("tmp-manifest-tar");
-    //let manifest_dir = tmp_manifest_dir.as_ref().unwrap();
-    fs_handler("tmp-manifest-dir".to_string(), "create_dir", None)?;
-
-    // create the relevant directories
     fs_handler("tmp-manifest-dir/operator".to_string(), "create_dir", None)?;
-    fs_handler("tmp_manifest-dir/release".to_string(), "create_dir", None)?;
+    fs_handler("tmp-manifest-dir/release".to_string(), "create_dir", None)?;
 
     let metadata_files: Vec<&str> = vec![
         "release-image-reference.json",
@@ -61,9 +58,7 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
             let op_imgrefs = parse_json_metadata(data.unwrap());
             if op_imgrefs.is_ok() {
                 for img in op_imgrefs.unwrap().iter() {
-                    if img.manifest_type == "manifest"
-                        && (img.arch == "amd64" || img.arch == "x86_64" || img.arch == "all")
-                    {
+                    if img.manifest_type == "manifest" && vec_arch.contains(&img.arch.as_ref()) {
                         let td: String;
                         if img.tag.is_some() && img.digest.len() == 0 {
                             td = format!("{}:{}", img.name.clone(), img.tag.as_ref().unwrap());
@@ -78,7 +73,7 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
                             img.arch
                         );
                         log.debug(&format!("manifest_file {}", manifest_file));
-                        log.info(&format!("processing image {:#?}", img.name));
+                        log.info(&format!("copying blobs for image {:#?}", img.name));
                         let m_data = fs::read_to_string(manifest_file.clone());
                         if m_data.is_ok() {
                             let mnfst = parse_json_manifest_operator(m_data.unwrap());
@@ -212,11 +207,8 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
     log.ex(&format!("total manifest count      : {}", manifest_count));
     let blob_size = fs_extra::dir::get_size("tmp-blobs-dir").unwrap();
     log.ex(&format!("total blob count          : {}", blob_count));
-    //log.ex(&format!(
-    //    "  building blob archive with size     : {}",
-    //    blob_size
-    //));
 
+    log.ex("  building blob archive/s ");
     // start our spinner
     let (keepalive_send, keepalive_recv) = keepalive::channel();
     let join_handle = spawn(move || {
@@ -230,24 +222,19 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
         }
         counter
     });
-
-    // create the tars
+    // create the blob tar/s
+    create_new_blobs_tar(base_dir.clone(), sequence)?;
     drop(keepalive_send);
     let _ = join_handle.join().unwrap();
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-
-    create_new_blobs_tar(base_dir.clone(), sequence)?;
 
     let tar_manifest =
         File::create(base_dir.clone() + &"/artifacts/mirror-manifests.tar".to_string()).unwrap();
     let mut tar_m = tar::Builder::new(tar_manifest);
 
     let manifest_size = fs_extra::dir::get_size("tmp-manifest-dir").unwrap();
-    log.ex(&format!(
-        "  building manifest archive with size : {}",
-        manifest_size
-    ));
 
+    log.ex("  building manifest archive ");
     tar_m.append_dir_all(".", "tmp-manifest-dir").unwrap();
     tar_m.finish().expect("should flush manifest contents");
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
@@ -258,11 +245,8 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
 
     let src_dir = format!("{}/{}", base_dir.clone(), "mirror-metadata");
     let metadata_size = fs_extra::dir::get_size(src_dir.clone()).unwrap();
-    log.ex(&format!(
-        "  building metadata archive with size : {}",
-        metadata_size
-    ));
 
+    log.ex("  building metadata archive ");
     tar_md.append_dir_all(".", src_dir.clone()).unwrap();
     tar_m.finish().expect("should flush metadata contents");
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
@@ -278,7 +262,9 @@ pub fn create_tar(log: &Logging, base_dir: String, archive_size: i64) -> Result<
 
     let serialized_data = serde_json::to_string(&ms).unwrap();
     let ms_file = format!("{}/{}", base_dir.clone(), "/artifacts/mirror-stats.json");
+
     fs_handler(ms_file, "write", Some(serialized_data))?;
+    fs_handler("tmp-manifest-dir".to_string(), "remove_dir", None)?;
 
     Ok(true)
 }
@@ -294,7 +280,7 @@ fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     let tar_blobs = File::create(&tar_sequence);
     if tar_blobs.is_err() {
         let err = MirrorError::new(&format!(
-            "create_new_blobs_tar  {}",
+            "fn create_new_blobs_tar  {}",
             tar_blobs.err().unwrap().to_string()
         ));
         return Err(err);
@@ -303,8 +289,8 @@ fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     // add all the contents to the blobs
     tar_b.append_dir_all(".", "tmp-blobs-dir").unwrap();
     tar_b.finish().expect("should flush blob contents");
+    // cleanup
     fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None)?;
-    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
     Ok(())
 }
 

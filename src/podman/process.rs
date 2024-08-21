@@ -14,7 +14,7 @@ pub fn build(log: &Logging, image: String, container_file: String) -> Result<(),
         .expect("failed to execute process");
 
     if output.status.success() {
-        log.info("build image completed successfully");
+        log.ex("build image completed successfully");
     }
     log.debug(&format!(
         "stdout: {}",
@@ -42,7 +42,7 @@ pub fn save(log: &Logging, image: String, output_file: String) -> Result<(), Mir
         .expect("failed to execute process");
 
     if output.status.success() {
-        log.info("save image (v2d2) to disk completed successfully");
+        log.ex("saving image to disk completed successfully");
     }
     log.debug(&format!(
         "stdout: {}",
