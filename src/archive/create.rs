@@ -34,7 +34,7 @@ pub fn create_tar(
 ) -> Result<bool, MirrorError> {
     // create the relevant directories
     fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
-
+    fs_handler(base_dir.clone() + &"/artifacts", "create_dir", None)?;
     fs_handler("tmp-manifest-dir/operator".to_string(), "create_dir", None)?;
     fs_handler("tmp-manifest-dir/release".to_string(), "create_dir", None)?;
 
@@ -47,6 +47,7 @@ pub fn create_tar(
     let mut blob_count = 0;
     let mut manifest_count = 0;
     let mut current_size: i64 = 0;
+    let mut total_size: i64 = 0;
     let mut sequence = 1;
 
     for file in metadata_files.iter() {
@@ -72,7 +73,7 @@ pub fn create_tar(
                             td,
                             img.arch
                         );
-                        log.debug(&format!("manifest_file {}", manifest_file));
+                        log.trace(&format!("manifest_file {}", manifest_file));
                         log.info(&format!("copying blobs for image {:#?}", img.name));
                         let m_data = fs::read_to_string(manifest_file.clone());
                         if m_data.is_ok() {
@@ -100,7 +101,7 @@ pub fn create_tar(
                                         if res.is_err() {
                                             let msg = &format!(
                                                 "{} {}",
-                                                "copying layer blob file",
+                                                "[create_tar] copying layer blob file",
                                                 res.err().unwrap().to_string().to_lowercase()
                                             );
                                             let err = MirrorError::new(msg);
@@ -130,7 +131,7 @@ pub fn create_tar(
                                     if res.is_err() {
                                         let msg = &format!(
                                             "{} {}",
-                                            "copying config blob file",
+                                            "[create_tar] copying config blob file",
                                             res.err().unwrap().to_string().to_lowercase()
                                         );
                                         let err = MirrorError::new(msg);
@@ -142,6 +143,7 @@ pub fn create_tar(
                                 }
 
                                 if current_size >= archive_size {
+                                    total_size = total_size + current_size;
                                     create_new_blobs_tar(base_dir.clone(), sequence)?;
                                     sequence += 1;
                                     current_size = 0;
@@ -165,7 +167,7 @@ pub fn create_tar(
                                 if res.is_err() {
                                     let msg = &format!(
                                         "{} {}",
-                                        "copying manifest file",
+                                        "[create-tar] copying manifest file",
                                         res.err().unwrap().to_string().to_lowercase()
                                     );
                                     let err = MirrorError::new(msg);
@@ -174,15 +176,15 @@ pub fn create_tar(
                                 manifest_count += 1;
                             } else {
                                 let err = MirrorError::new(&format!(
-                                    "create_tar parsing manifest {}",
-                                    mnfst.err().unwrap().to_string()
+                                    "[create_tar] parsing manifest {}",
+                                    mnfst.err().unwrap().to_string().to_lowercase()
                                 ));
                                 return Err(err);
                             }
                         } else {
                             let err = MirrorError::new(&format!(
-                                "create_tar reading manifest {}",
-                                m_data.err().unwrap().to_string()
+                                "[create_tar] reading manifest {}",
+                                m_data.err().unwrap().to_string().to_lowercase()
                             ));
                             return Err(err);
                         }
@@ -190,22 +192,21 @@ pub fn create_tar(
                 }
             } else {
                 let err = MirrorError::new(&format!(
-                    "create_tar parsing metadata {}",
-                    op_imgrefs.err().unwrap().to_string()
+                    "[create_tar] parsing metadata {}",
+                    op_imgrefs.err().unwrap().to_string().to_lowercase()
                 ));
                 return Err(err);
             }
         } else {
             let err = MirrorError::new(&format!(
-                "create_tar reading data {}",
-                data.err().unwrap().to_string()
+                "[create_tar] reading data {}",
+                data.err().unwrap().to_string().to_lowercase()
             ));
             return Err(err);
         }
     }
 
     log.ex(&format!("total manifest count      : {}", manifest_count));
-    let blob_size = fs_extra::dir::get_size("tmp-blobs-dir").unwrap();
     log.ex(&format!("total blob count          : {}", blob_count));
 
     log.ex("  building blob archive/s ");
@@ -253,7 +254,7 @@ pub fn create_tar(
 
     let ms = MirrorStats {
         blob_count,
-        blob_size,
+        blob_size: total_size as u64,
         manifest_count,
         manifest_size,
         metadata_count: 3,
@@ -265,12 +266,12 @@ pub fn create_tar(
 
     fs_handler(ms_file, "write", Some(serialized_data))?;
     fs_handler("tmp-manifest-dir".to_string(), "remove_dir", None)?;
+    fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None)?;
 
     Ok(true)
 }
 
 fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
-    fs_handler(dir.clone() + &"/artifacts", "create_dir", None)?;
     let tar_sequence = format!(
         "{}/{}-{:0>4}.tar",
         dir.clone(),
@@ -280,17 +281,25 @@ fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     let tar_blobs = File::create(&tar_sequence);
     if tar_blobs.is_err() {
         let err = MirrorError::new(&format!(
-            "fn create_new_blobs_tar  {}",
+            "[create_new_blobs_tar]  {}",
             tar_blobs.err().unwrap().to_string()
         ));
         return Err(err);
     }
     let mut tar_b = tar::Builder::new(tar_blobs.unwrap());
     // add all the contents to the blobs
-    tar_b.append_dir_all(".", "tmp-blobs-dir").unwrap();
+    let res = tar_b.append_dir_all(".", "tmp-blobs-dir");
+    if res.is_err() {
+        let err = MirrorError::new(&format!(
+            "[create_new_blobs_tar]  {}",
+            res.err().unwrap().to_string()
+        ));
+        return Err(err);
+    }
     tar_b.finish().expect("should flush blob contents");
     // cleanup
     fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None)?;
+    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
     Ok(())
 }
 

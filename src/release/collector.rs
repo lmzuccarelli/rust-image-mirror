@@ -86,6 +86,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     skip_manifests_check: bool,
     dry_run: bool,
     releases: Release,
+    verify_blobs: bool,
 ) -> Result<(), MirrorError> {
     log.hi("release collector mode: mirror-to-disk");
 
@@ -568,7 +569,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 let p_fbi = process_fb_image(
                     dir.clone(),
                     "graph-image".to_string(),
-                    "openshift/graph-image".to_string(),
+                    "openshift".to_string(),
                     "latest".to_string(),
                     "release".to_string(),
                 );
@@ -639,7 +640,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         }
     } else {
         let map = remove_duplicates(dir.clone(), fslayers);
-        let res = execute_batch(log, dir.clone(), map).await;
+        let res = execute_batch(log, dir.clone(), verify_blobs, map).await;
         if res.is_err() {
             return Err(res.err().unwrap());
         }

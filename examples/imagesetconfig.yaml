@@ -6,7 +6,7 @@ mirror:
     images:
     - name: "quay.io/openshift-release-dev/ocp-release:4.15.8-x86_64"
   operators:
-  - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.15"
+  - catalog: "registry.redhat.io/redhat/redhat-operator-index:v4.12"
     packages:
     #- name: aws-load-balancer-operator
     #  bundles: 

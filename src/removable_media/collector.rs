@@ -2,6 +2,7 @@ use crate::archive::create::MirrorStats;
 use crate::error::handler::MirrorError;
 use crate::image::utils::fs_handler;
 use crate::image::utils::keepalive;
+use crate::image::utils::verify_file;
 use custom_logger::*;
 use hex::encode;
 use mirror_copy::get_destination_registry;
@@ -9,10 +10,8 @@ use mirror_copy::parse_json_manifest_operator;
 use mirror_copy::Manifest;
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
-use sha256::*;
 use std::fs::{self};
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
 use std::process;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
@@ -88,9 +87,9 @@ pub async fn removable_media_disk_to_mirror(
                             for layer in m.clone().layers.unwrap().iter() {
                                 let blob =
                                     layer.digest.split("sha256:").nth(1).unwrap().to_string();
-                                if !vec_blobs.contains(&blob) {
-                                    vec_blobs.insert(0, blob.clone());
-                                }
+                                //if !vec_blobs.contains(&blob) {
+                                vec_blobs.insert(0, blob.clone());
+                                //}
                             }
                             // add the config
                             let cfg_blob = m
@@ -102,9 +101,9 @@ pub async fn removable_media_disk_to_mirror(
                                 .nth(1)
                                 .unwrap()
                                 .to_string();
-                            if !vec_blobs.contains(&cfg_blob) {
-                                vec_blobs.insert(0, cfg_blob.clone());
-                            }
+                            //if !vec_blobs.contains(&cfg_blob) {
+                            vec_blobs.insert(0, cfg_blob.clone());
+                            //}
                             vec_manifests.insert(0, op_path.clone());
                         }
                     }
@@ -124,7 +123,7 @@ pub async fn removable_media_disk_to_mirror(
         fs_handler("tmp-store".to_string(), "create_dir", None)?;
 
         if !skip_blobs {
-            log.hi(&format!("uploading {} blobs", vec_blobs.len()));
+            log.hi(&format!("uploading blobs"));
             let tars = fs::read_dir(from.clone());
             if tars.is_ok() {
                 log.mid(&bar);
@@ -149,6 +148,7 @@ pub async fn removable_media_disk_to_mirror(
                                                 log.error(&format!("{:?}", res.err().unwrap()));
                                                 continue;
                                             }
+                                            log.debug(&format!("path {}", op_path));
                                             log.ex(&format!("  pushing blob {}", digest));
                                             // start our spinner
                                             let (keepalive_send, keepalive_recv) =
@@ -201,13 +201,13 @@ pub async fn removable_media_disk_to_mirror(
                                                 "remove_file",
                                                 None,
                                             )?;
-                                            blob_count += 1;
                                             if blob_count % 10 == 0 {
                                                 let update = blob_count as f32 / per_position;
                                                 let new_bar =
                                                     bar.replacen("-", "#", update.floor() as usize);
                                                 log.mid(&new_bar);
                                             }
+                                            blob_count += 1;
                                         }
                                     }
                                 }
@@ -323,23 +323,6 @@ pub async fn removable_media_disk_to_mirror(
     Ok(())
 }
 
-// verify_file - function to check size and sha256 hash of contents
-async fn verify_file(log: &Logging, dir: String, blob_sum: String, blob_size: u64, data: Vec<u8>) {
-    let f = &format!("{}/{}", dir, blob_sum);
-    let res = fs::metadata(&f);
-    match res {
-        Ok(res) => {
-            log.ex(&format!("verifying blob  {}", &blob_sum));
-            assert_eq!(res.size(), blob_size);
-            let hash = digest(&data);
-            assert_eq!(hash, blob_sum);
-        }
-        Err(err) => {
-            log.error(&format!("blob error  {:#?}", err.to_string()));
-        }
-    }
-}
-
 pub async fn process_blob(
     log: &Logging,
     dir: String,
@@ -408,7 +391,7 @@ pub async fn process_blob(
         let mut vec_bytes = Vec::new();
         let _buf = file.read_to_end(&mut vec_bytes).await.unwrap();
         if !skip_verify {
-            verify_file(
+            let res = verify_file(
                 log,
                 dir.clone(),
                 blob.clone(),
@@ -416,6 +399,10 @@ pub async fn process_blob(
                 vec_bytes.clone(),
             )
             .await;
+            if res.is_err() {
+                let err = MirrorError::new(&format!("{}", res.err().unwrap().to_string(),));
+                return Err(err);
+            }
         }
         let url = location.to_str().unwrap().to_string() + &"&digest=sha256:" + &blob;
         log.debug(&format!("url  {:#?}", url.clone()));
@@ -540,21 +527,29 @@ pub async fn check_manifest(
         .send()
         .await;
 
-    let result = res_put.unwrap();
-    log.trace(&format!(
-        "result for manifest {:#?} {} {}",
-        result.status(),
-        namespace,
-        head_url.clone() + &tag_digest
-    ));
-
-    if result.status() != StatusCode::OK {
-        let err = MirrorError::new(&format!(
-            "upload manifest failed with status {}",
+    if res_put.is_ok() {
+        let result = res_put.unwrap();
+        log.trace(&format!(
+            "result for manifest {:#?} {} {}",
             result.status(),
+            namespace,
+            head_url.clone() + &tag_digest
+        ));
+
+        if result.status() != StatusCode::OK {
+            let err = MirrorError::new(&format!(
+                "upload manifest failed with status {}",
+                result.status(),
+            ));
+            Err(err)
+        } else {
+            Ok(String::from("ok"))
+        }
+    } else {
+        let err = MirrorError::new(&format!(
+            "upload manifest failed {}",
+            res_put.err().unwrap().to_string().to_lowercase(),
         ));
         Err(err)
-    } else {
-        Ok(String::from("ok"))
     }
 }

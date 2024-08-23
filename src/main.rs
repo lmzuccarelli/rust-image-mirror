@@ -41,6 +41,7 @@ async fn main() {
     let skip_manifests = args.skip_manifest_check.unwrap().to_string();
     let dry_run = args.dry_run;
     let arch = args.architecture.to_string();
+    let verify_blobs = args.verify_blobs;
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -140,6 +141,7 @@ async fn main() {
                 skip_manifest_check,
                 dry_run,
                 isc_config_final.mirror.release.unwrap(),
+                verify_blobs,
             )
             .await;
             if res.is_err() {
@@ -158,10 +160,12 @@ async fn main() {
                 dry_run,
                 isc_config_final.mirror.operators.unwrap(),
                 vec_arch.clone(),
+                verify_blobs,
             )
             .await;
+
             if res.is_err() {
-                log.error(&format!("{}", res.err().unwrap()));
+                log.error(&format!("shama groon {}", res.err().unwrap()));
             }
         }
         // check for additional images
@@ -175,6 +179,7 @@ async fn main() {
                 dry_run,
                 isc_config_final.mirror.additional_images.unwrap(),
                 vec_arch.clone(),
+                verify_blobs,
             )
             .await;
             if res.is_err() {

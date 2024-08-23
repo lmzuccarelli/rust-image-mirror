@@ -2,22 +2,19 @@
 
 ![Badges](assets/flat.svg)
 
-This is a simple POC that mirrors ocp/okd release, operator and additional images in dockerv2 format (from a registry) to disk 
+This is a simple POC that mirrors ocp release, operator and additional images from a registry to disk 
 and from disk to mirror
 
 ## POC 
 
-This is still a WIP. It will use the head of the defaultChannel (for operators) 
-and specific release version only (for platform/release images)
+This is still a WIP. It will use the head of the defaultChannel (for operators) and uses bundle filtering for specfic versions of operators.
+For platform release a specifc version and platform architecture is used (refer to example/imagesetconfig.yaml)
 
-I used a simple approach - Occam's razor
-
-- A scientific and philosophical rule that entities should not be multiplied unnecessarily (KISS)
-- Worked with a v2 images for the POC
-- only operators have been included for now
-- release and additional images are not implemented yet
+**NB** To buid graph images (OSUS) and rebuilding catalogs there is a dependency on Podman, i.e Podman should be installed on the os where this binary is used
 
 ## Usage
+
+This assumes you have already installed Rust (refer to https://www.rust-lang.org/tools/install)
 
 Clone this repo
 
@@ -26,8 +23,8 @@ Ensure that you have the correct permissions set in the $XDG_RUNTIME_DIR/contain
 Execute the following to copy to local disk 
 
 ```bash
-mkdir -p working-dir/rhopi/blobs/sha256
-cargo build 
+
+make build 
 
 # use the catalog and release introspection tools to create a merged ImageSetConfig (this uses the example in this repo)
 # refer to https://github.com/lmzuccarelli/rust-release-introspection-tool and https://github.com/lmzuccarelli/rust-catalog-introspection-tool for more details
@@ -45,8 +42,28 @@ mirror:
       - name: "aws-load-balancer-operator.v1.1.0"  
 
 # execute 
-cargo run -- --config imagesetconfig.yaml 
+./target/release/image-mirror --config imagesetconfig.yaml --loglevel info 
 ```
+
+## Notes
+
+Only RedHat operator images have been tested i.e
+
+- redhat-operator-index
+- redhat-community-operator-index
+- redhat-certified-operator-index
+
+Operator filtering uses defaultChannel if no bundle name is specified.
+Only bundle name filtering is used (no channels,min and max versions) - this allows for more accurate filtering
+
+For extra tooling please refer to the following repo's
+
+Release introspection tool - https://github.com/lmzuccarelli/rust-release-introspection-tool
+
+Catalog introspection tool - https://github.com/lmzuccarelli/rust-catalog-introspection-tool
+
+Catalog TUI viewer         - https://github.com/lmzuccarelli/rust-operator-catalog-viewer
+
 
 ## Testing & Debugging
 

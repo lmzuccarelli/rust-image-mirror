@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "image-mirror"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -949,7 +949,8 @@ dependencies = [
 
 [[package]]
 name = "mirror-catalog-index"
-version = "0.2.0"
+version = "0.3.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#98ce278e82ed4976a0694cf0cea020d12f2b0f8e"
 dependencies = [
  "custom-logger",
  "flate2",
@@ -974,7 +975,8 @@ dependencies = [
 
 [[package]]
 name = "mirror-copy"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-copy?branch=main#389e2f927264973af39bad907ef0b108d167c2d0"
 dependencies = [
  "async-trait",
  "base64",
@@ -987,6 +989,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "sha2",
+ "sha256",
  "tar",
  "tokio",
  "urlencoding",

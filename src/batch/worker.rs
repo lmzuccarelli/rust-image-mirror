@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub async fn execute_batch(
     log: &Logging,
     dir: String,
+    verify_blob: bool,
     map_in: HashMap<String, Vec<FsLayer>>,
 ) -> Result<(), MirrorError> {
     let mut futs = FuturesUnordered::new();
@@ -20,7 +21,7 @@ pub async fn execute_batch(
     // each future handles get_blobs api call
 
     // batch the calls
-    for (k, v) in map_in {
+    for (k, v) in map_in.clone() {
         let hld = k.split("https://").nth(1).unwrap();
         let registry = hld.split("/").nth(0).unwrap();
         log.trace(&format!("url {}", k));
@@ -28,21 +29,21 @@ pub async fn execute_batch(
         let mut count = 0;
         let per_position = v.len() as f32 / 61.0;
         if token.is_ok() {
-            log.info(&format!("downloading {} blobs", v.len()));
+            if v.len() > 0 {
+                log.info(&format!("downloading {} blobs", v.len()));
+            }
             for layer in v.iter() {
                 futs.push(get_blob(
                     log,
                     dir.clone() + &"/blobs-store/",
                     k.clone(),
                     token.as_ref().unwrap().clone(),
-                    layer.original_ref.as_ref().unwrap().clone(),
+                    verify_blob,
                     layer.blob_sum.clone(),
                 ));
                 if futs.len() >= batch_size {
                     let response = futs.next().await.unwrap();
-                    if response.is_ok() {
-                        log.debug(&format!("percentage complete"));
-                    } else {
+                    if response.is_err() {
                         let err = MirrorError::new(&format!(
                             "response batch worker {}",
                             response.err().unwrap().to_string().to_lowercase()
@@ -67,9 +68,22 @@ pub async fn execute_batch(
     }
     // Wait for the remaining to finish.
     while let Some(response) = futs.next().await {
-        log.debug(&format!("completed rest of batch {:#?}", response.unwrap()));
-        let new_bar = bar.replacen("-", "#", 62);
-        log.mid(&new_bar);
+        if response.is_err() {
+            let err = MirrorError::new(&format!(
+                "futures reponse {}",
+                response.err().unwrap().to_string().to_lowercase()
+            ));
+            return Err(err);
+        }
     }
+
+    for (_k, v) in map_in {
+        if v.len() > 0 {
+            let new_bar = bar.replacen("-", "#", 62);
+            log.mid(&new_bar);
+            break;
+        }
+    }
+
     Ok(())
 }

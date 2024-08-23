@@ -20,6 +20,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
     dry_run: bool,
     additional: Vec<Image>,
     vec_arch: Vec<&str>,
+    verify_blobs: bool,
 ) -> Result<(), MirrorError> {
     log.hi("additional images collector mode: mirror-to-disk");
 
@@ -299,7 +300,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
         }
     } else {
         let map = remove_duplicates(dir.clone(), fslayers);
-        let res = execute_batch(log, dir.clone(), map).await;
+        let res = execute_batch(log, dir.clone(), verify_blobs, map).await;
         if res.is_err() {
             return Err(res.err().unwrap());
         }

@@ -52,9 +52,13 @@ pub struct Cli {
     #[arg(short, long, value_name = "architecture", default_value = "amd64")]
     pub architecture: String,
 
-    /// set the skip-blob-upload flag.
+    /// set the skip-blob-upload flag. This will skip all blob uploads to remote registry (dev mode)
     #[arg(short, long, value_name = "skip-blob-upload", default_value = "false")]
     pub skip_blob_upload: bool,
+
+    /// set the verify-blobs flag (will enable/disbale sha56 contents with digest.
+    #[arg(short, long, value_name = "verify_blobs", default_value = "false")]
+    pub verify_blobs: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialOrd, PartialEq, Ord, Eq)]

@@ -2,8 +2,10 @@ use crate::api::schema::MirrorImageInfo;
 use crate::error::handler::MirrorError;
 use custom_logger::*;
 use mirror_copy::*;
+use sha256::digest;
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 // used to drive a spinner
@@ -93,62 +95,69 @@ pub fn process_fb_image(
     mirror_type: String,
 ) -> Result<MirrorImageInfo, MirrorError> {
     let index_json = format!("{}/manifest.json", &oci);
-    let index_data = fs::read_to_string(index_json);
-    let m = parse_json_manifest_operator(index_data.as_ref().unwrap().to_string());
-    if m.is_ok() {
-        let mnfst = m.unwrap();
-        for mn in mnfst.layers.unwrap().iter() {
-            let digest = mn.digest.replace(":", "/");
-            let blob = digest.split("sha256/").nth(1).unwrap();
+    let res_data = fs::read_to_string(index_json);
+    if res_data.is_ok() {
+        let m = parse_json_manifest_operator(res_data.as_ref().unwrap().to_string());
+        if m.is_ok() {
+            let mnfst = m.unwrap();
+            for mn in mnfst.layers.unwrap().iter() {
+                let digest = mn.digest.replace(":", "/");
+                let blob = digest.split("sha256/").nth(1).unwrap();
+                let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
+                fs_handler(to_path.clone(), "create_dir", None)?;
+                fs::copy(
+                    format!("{}/{}", &oci, blob),
+                    format!("{}/{}", to_path, blob),
+                )
+                .expect("should copy blob");
+            }
+            // copy the config
+            let cfg = mnfst.config;
+            let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
+            let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
             let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
-            fs::create_dir_all(to_path.clone()).expect("should create blob directory");
-            fs::copy(
-                format!("{}/{}", &oci, blob),
-                format!("{}/{}", to_path, blob),
-            )
-            .expect("should copy blob");
-        }
-        // copy the config
-        let cfg = mnfst.config;
-        let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
-        let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
-        let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
-        fs::create_dir_all(to_path.clone()).expect("should create blob directory");
-        fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy fb config blob");
-        // finally write the manifest
-        let manifest_file = format!(
-            "{}/manifests/{}/{}:{}-all.json",
-            dir.clone(),
-            &mirror_type,
-            oci,
-            tag_digest
-        );
-        fs::write(manifest_file, index_data.unwrap())
-            .expect("should write manifest to manifest cache");
+            fs_handler(to_path.clone(), "create_dir", None)?;
+            fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy fb config blob");
+            // finally write the manifest
+            let manifest_file = format!(
+                "{}/manifests/{}/{}:{}-amd64.json",
+                dir.clone(),
+                &mirror_type,
+                oci,
+                tag_digest
+            );
+            fs_handler(manifest_file, "write", Some(res_data.unwrap()))?;
 
-        let mut mii = MirrorImageInfo {
-            // TODO:should fix this to parse image
-            reference: reference.clone(),
-            name: oci.to_string(),
-            arch: "all".to_string(),
-            namespace: reference,
-            digest: "".to_string(),
-            manifest_type: "manifest".to_string(),
-            tag: Some(tag_digest.clone()),
-            created: "".to_string(),
-            mirror_type: mirror_type.to_string(),
-            bundle: None,
-        };
+            let mut mii = MirrorImageInfo {
+                // TODO:should fix this to parse image
+                reference: oci.to_string(),
+                name: oci.to_string(),
+                arch: "amd64".to_string(),
+                namespace: reference + &"/" + &oci,
+                digest: "".to_string(),
+                manifest_type: "manifest".to_string(),
+                tag: Some(tag_digest.clone()),
+                created: "".to_string(),
+                mirror_type: mirror_type.to_string(),
+                bundle: None,
+            };
 
-        if tag_digest.contains("sha256:") {
-            mii.digest = blob.to_string();
-            mii.tag = None;
+            if tag_digest.contains("sha256:") {
+                mii.digest = blob.to_string();
+                mii.tag = None;
+            }
+            Ok(mii)
+        } else {
+            let err = MirrorError::new(&format!(
+                "parsing fb manifest {}",
+                m.err().unwrap().to_string().to_lowercase()
+            ));
+            return Err(err);
         }
-        Ok(mii)
     } else {
         let err = MirrorError::new(&format!(
-            "parsing fb manifest {}",
-            m.err().unwrap().to_string().to_lowercase()
+            "reading fb manifest {}",
+            res_data.err().unwrap().to_string().to_lowercase()
         ));
         return Err(err);
     }
@@ -165,7 +174,13 @@ pub fn remove_duplicates(
         for layer in v.iter() {
             // scrub out duplicates
             let truncated_image = layer.blob_sum.split(":").nth(1).unwrap();
-            let inner_blobs_file = get_blobs_file(dir.clone() + &"/blobs-store/", &truncated_image);
+            let inner_blobs_file = format!(
+                "{}/{}/{}/{}",
+                dir.clone(),
+                "blobs-store",
+                &truncated_image[0..2],
+                truncated_image
+            );
             let mut exists = Path::new(&inner_blobs_file).exists();
             if exists {
                 let metadata = fs::metadata(&inner_blobs_file).unwrap();
@@ -234,7 +249,7 @@ pub fn fs_handler(dir_file: String, mode: &str, data: Option<String>) -> Result<
             let res = fs::write(&dir_file, data.unwrap());
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "deleting directory {} {}",
+                    "writing file {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -245,6 +260,40 @@ pub fn fs_handler(dir_file: String, mode: &str, data: Option<String>) -> Result<
             let err = MirrorError::new(&format!("mode {} not supported", dir_file,));
             return Err(err);
         }
+    }
+    Ok(())
+}
+
+// verify_file - function to check size and sha256 hash of contents
+pub async fn verify_file(
+    log: &Logging,
+    dir: String,
+    blob_sum: String,
+    blob_size: u64,
+    data: Vec<u8>,
+) -> Result<(), MirrorError> {
+    let f = &format!("{}/{}", dir, blob_sum);
+    let res = fs::metadata(&f);
+    if res.is_ok() {
+        log.info(&format!("verifying blob  {}", &blob_sum));
+        if res.unwrap().size() != blob_size {
+            let err = MirrorError::new(&format!(
+                "sha256 file size don't match {}",
+                blob_size.clone()
+            ));
+            return Err(err);
+        }
+        let hash = digest(&data);
+        if hash != blob_sum {
+            let err = MirrorError::new(&format!(
+                "sha256 hash contents don't match {}",
+                blob_sum.clone()
+            ));
+            return Err(err);
+        }
+    } else {
+        let err = MirrorError::new(&format!("sha256 hash metadata file {}", f));
+        return Err(err);
     }
     Ok(())
 }

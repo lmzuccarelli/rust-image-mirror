@@ -50,6 +50,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     dry_run: bool,
     operators: Vec<Operator>,
     vec_arch: Vec<&str>,
+    verify_blobs: bool,
 ) -> Result<(), MirrorError> {
     log.hi("operator collector mode: mirror-to-disk");
 
@@ -67,18 +68,17 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
     let mut image_vec: Vec<String> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut vec_catalog_info: Vec<CatalogCopyInfo> = Vec::new();
-    let mut manifest: String;
+    let mut manifestlist: String;
 
     // get all relevant catalogs in config
     // download manifests and blobs if changed
     // untar and set /configs directory
     for ir in img_ref.iter() {
-        let manifest_json = format!(
-            "{}/{}/{}/{}/manifest.json",
+        let manifestlist_json = format!(
+            "{}/{}/{}/manifest-list.json",
             dir.clone(),
             ir.name.clone(),
             ir.version.clone(),
-            "amd64".to_string(),
         );
 
         // use token to get manifest
@@ -88,7 +88,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             process::exit(1)
         }
 
-        log.trace(&format!("manifest json file {}", manifest_json));
+        log.trace(&format!("manifest json file {}", manifestlist_json));
 
         if !skip_manifests_check {
             // construct manifest api url
@@ -97,40 +97,42 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 ir.registry, ir.namespace, ir.name, ir.version
             );
 
-            log.info(&format!(
-                "api call manifest for {:#?}",
+            log.mid(&format!(
+                "api call manifest for {}",
                 format!(
                     "{}/{}/{}/{}",
                     ir.registry, ir.namespace, ir.name, ir.version
                 )
             ));
-
+            // this should get a manifestlist
             let res = reg_con
                 .get_manifest(manifest_url.clone(), token.as_ref().unwrap().to_string())
                 .await;
 
             if res.is_ok() {
-                let manifest_mem = res.as_ref().unwrap();
-                let mut exists = Path::new(&manifest_json.clone()).exists();
+                let manifestlist_mem = res.as_ref().unwrap();
+                let exists = Path::new(&manifestlist_json.clone()).exists();
                 if exists {
-                    let manifest_on_disk = fs::read_to_string(manifest_json.clone());
-                    if manifest_on_disk.is_ok() {
-                        if manifest_on_disk.unwrap() != manifest_mem.to_string() {
-                            exists = false;
-                        }
-                    } else {
-                        exists = false;
+                    let manifest_on_disk = fs::read_to_string(manifestlist_json.clone());
+                    if manifest_on_disk.is_err()
+                        || manifest_on_disk.unwrap() != manifestlist_mem.to_string()
+                    {
+                        let mfstlist_dir =
+                            format!("{}/{}/{}", dir.clone(), ir.name.clone(), ir.version.clone());
+                        fs_handler(mfstlist_dir, "create_dir", None)?;
+                        fs_handler(
+                            manifestlist_json,
+                            "write",
+                            Some(manifestlist_mem.to_string()),
+                        )?;
                     }
                 }
-                if !exists {
-                    fs_handler(manifest_json, "write", Some(manifest_mem.to_string()))?;
-                }
-                manifest = res.unwrap();
+                manifestlist = manifestlist_mem.to_string();
             } else {
                 // try read from disk
-                let manifest_on_disk = fs::read_to_string(manifest_json.clone());
+                let manifest_on_disk = fs::read_to_string(manifestlist_json.clone());
                 if manifest_on_disk.is_ok() {
-                    manifest = manifest_on_disk.unwrap();
+                    manifestlist = manifest_on_disk.unwrap();
                 } else {
                     // we have a big problem
                     let err = MirrorError::new(&format!(
@@ -141,9 +143,9 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 }
             }
         } else {
-            let res_manifest = fs::read_to_string(manifest_json.clone());
+            let res_manifest = fs::read_to_string(manifestlist_json.clone());
             if res_manifest.is_ok() {
-                manifest = res_manifest.unwrap();
+                manifestlist = res_manifest.unwrap();
             } else {
                 // again big problem
                 let err = MirrorError::new(&format!(
@@ -154,12 +156,10 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             }
         }
 
-        //if manifest.is_ok() {
-        let local_manifest = manifest.clone();
-        log.trace(&format!("manifest {:#}", local_manifest.clone()));
-        let manifest_list = parse_json_manifestlist(local_manifest.clone());
-        if manifest_list.is_ok() {
-            for m in manifest_list.unwrap().manifests.iter() {
+        let local_manifestlist = manifestlist.clone();
+        let local_pml = parse_json_manifestlist(local_manifestlist.clone());
+        if local_pml.is_ok() {
+            for m in local_pml.unwrap().manifests.iter() {
                 let arch = m.platform.as_ref().unwrap().architecture.to_string();
                 let manifest_json = format!(
                     "{}/{}/{}/{}/manifest.json",
@@ -173,7 +173,6 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 let manifest_dir = manifest_json.split("manifest.json").nth(0).unwrap();
                 log.info(&format!("manifest directory {}", manifest_dir));
                 fs_handler(manifest_dir.to_string(), "create_dir", None)?;
-                log.trace(&format!("manifest json file {}", manifest_json));
 
                 let mnfst_url = &format!(
                     "https://{}/v2/{}/{}/manifests/{}",
@@ -197,41 +196,56 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                     );
 
                     let cache_exists = Path::new(&working_dir_cache).exists();
-                    let res_manifest_in_mem =
-                        parse_json_manifest_operator(manifest.as_ref().unwrap().clone()).unwrap();
-                    let mut exists = true;
-                    if cache_exists {
-                        let manifest_on_disk = fs::read_to_string(&manifest_json).unwrap();
-                        let res_manifest_on_disk =
-                            parse_json_manifest_operator(manifest_on_disk).unwrap();
-                        if res_manifest_on_disk != res_manifest_in_mem || !cache_exists {
-                            exists = false;
-                        }
-                    } else {
-                        exists = false;
+                    let res_pmm = parse_json_manifest_operator(manifest.as_ref().unwrap().clone());
+                    if res_pmm.is_err() {
+                        let err = MirrorError::new(&format!(
+                            "parsing manifest {}",
+                            res_pmm.err().unwrap().to_string().to_lowercase()
+                        ));
+                        return Err(err);
                     }
-                    if !exists {
-                        log.info("detected change in index manifest");
-                        fs_handler(
-                            manifest_json.clone(),
-                            "write",
-                            Some(manifest.as_ref().unwrap().clone()),
-                        )?;
-
-                        // detected a change so clean the dir contents
-                        if cache_exists {
-                            rm_rf::remove(&working_dir_cache)
-                                .expect("should delete current untarred cache");
-                            // re-create the cache directory
-                            let mut builder = DirBuilder::new();
-                            builder.mode(0o777);
-                            builder
-                                .create(&working_dir_cache)
-                                .expect("unable to create directory");
+                    let mut changed = false;
+                    if cache_exists {
+                        let res_mod = fs::read_to_string(&manifest_json);
+                        if res_mod.is_err() {
+                            let err = MirrorError::new(&format!(
+                                "reading manifest on disk {}",
+                                res_mod.err().unwrap().to_string().to_lowercase()
+                            ));
+                            return Err(err);
                         }
+                        let res_pmd =
+                            parse_json_manifest_operator(res_mod.as_ref().unwrap().to_string());
+                        if res_pmd.is_err() {
+                            let err = MirrorError::new(&format!(
+                                "parsing manifest on disk {}",
+                                res_pmd.err().unwrap().to_string().to_lowercase()
+                            ));
+                            return Err(err);
+                        }
+                        if res_pmd.as_ref().unwrap().clone() != res_pmm.as_ref().unwrap().clone() {
+                            log.info("detected change in index manifest");
+                            fs_handler(
+                                manifest_json.clone(),
+                                "write",
+                                Some(manifest.unwrap().clone()),
+                            )?;
+                            changed = true;
+                        }
+                    }
+                    if !cache_exists || changed {
+                        // detected a change so clean the dir contents
+                        rm_rf::remove(&working_dir_cache)
+                            .expect("should delete current untarred cache");
+                        // re-create the cache directory
+                        let mut builder = DirBuilder::new();
+                        builder.mode(0o777);
+                        builder
+                            .create(&working_dir_cache)
+                            .expect("unable to create directory");
 
                         let mut fslayers: Vec<FsLayer> = vec![];
-                        for l in res_manifest_in_mem.layers.unwrap().iter() {
+                        for l in res_pmm.unwrap().layers.unwrap().iter() {
                             let fsl = FsLayer {
                                 blob_sum: l.digest.clone(),
                                 original_ref: Some(ir.name.clone()),
@@ -245,17 +259,18 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                             "https://{}/v2/{}/{}/blobs/",
                             ir.registry, ir.namespace, ir.name
                         );
+                        let mut hm: HashMap<String, Vec<FsLayer>> = HashMap::new();
+                        hm.insert(blobs_url, fslayers.clone());
                         // use a concurrent process to get related blobs
-                        let response = reg_con
-                            .get_blobs(
-                                log,
-                                blobs_dir.clone(),
-                                blobs_url,
-                                token.as_ref().unwrap().clone(),
-                                fslayers.clone(),
-                            )
-                            .await;
-                        log.debug(&format!("completed image index download {:#?}", response));
+                        let result = execute_batch(log, blobs_dir.clone(), false, hm).await;
+                        if result.is_err() {
+                            let err = MirrorError::new(&format!(
+                                "batching blobs for operator index {}",
+                                result.err().unwrap().to_string().to_lowercase()
+                            ));
+                            return Err(err);
+                        }
+                        log.debug(&format!("completed image index download"));
 
                         untar_layers(
                             log,
@@ -291,7 +306,6 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 }
             }
         }
-        //}
 
         // index is in place now get all packages, bundles and related images
         // as specified in the imagesetconfig. At this point we have the latest configs
@@ -420,7 +434,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 }
                             }
 
-                            // check to see if the manifest on disk (operator-rerence-image exists
+                            // check to see if the manifest on disk (operator-reference-image exists
                             // and has not changed)
                             // check for manifest list first
                             let manifest_list = parse_json_manifestlist(manifest.clone());
@@ -476,8 +490,9 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                             );
 
                                             log.mid(&format!(
-                                                "api call for manifest {:#?}",
-                                                f.clone()
+                                                "api call for manifest {}/{}",
+                                                arch_img.namespace.clone(),
+                                                arch_img.name.clone()
                                             ));
                                             // use the RegistryInterface to make the api call
                                             let res = reg_con
@@ -506,7 +521,6 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                 local_manifest = res.unwrap();
                                             }
                                         }
-                                        // remove registry from related image
                                         let img_ref = MirrorImageInfo {
                                             reference: ir.name.clone() + &"/" + &ir.version,
                                             name: ri.name.clone(),
@@ -631,9 +645,8 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
                             let mut in_map: HashMap<String, Vec<FsLayer>> = HashMap::new();
                             in_map.insert(op_url.clone(), fslayers.clone());
-                            // batch the calls
                             let map = remove_duplicates(dir.clone(), in_map);
-                            let res = execute_batch(log, dir.clone(), map).await;
+                            let res = execute_batch(log, dir.clone(), verify_blobs, map).await;
                             if res.is_err() {
                                 return Err(res.err().unwrap());
                             }
@@ -659,9 +672,10 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
         if res_bc.is_err() {
             log.error(&format!(
                 "could not rebuild catalog {}",
-                res_bc.err().unwrap().to_string()
+                res_bc.as_ref().err().unwrap().to_string()
             ));
         }
+        image_ref_tracker.append(&mut res_bc.unwrap().clone());
     }
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());
@@ -1014,6 +1028,7 @@ mod tests {
             true,
             ops.clone(),
             vec![],
+            true,
         ));
         if res.is_ok() {
             log.info("testing logging in fake test");
