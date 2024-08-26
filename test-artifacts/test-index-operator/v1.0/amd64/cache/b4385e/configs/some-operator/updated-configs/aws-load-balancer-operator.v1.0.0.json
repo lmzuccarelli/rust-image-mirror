@@ -1,0 +1,19 @@
+{
+  "schema": "olm.bundle",
+  "name": "aws-load-balancer-operator.v1.0.0",
+  "defaultChannel": null,
+  "description": null,
+  "package": "some-operator",
+  "entries": null,
+  "image": "127.0.0.1/albo/aws-load-balancer-operator-bundle@sha256:d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d",
+  "relatedImages": [
+    {
+      "name": "controller",
+      "image": "127.0.0.1/albo/aws-load-balancer-controller-rhel8@sha256:cad8f6380b4dd4e1396dafcd7dfbf0f405aa10e4ae36214f849e6a77e6210d92"
+    },
+    {
+      "name": "",
+      "image": "127.0.0.1/albo/aws-load-balancer-operator-bundle@sha256:d4d65d0d7c249d076da74da22296280ddef534da2bf54efb9e46d2bd7b9a602d"
+    }
+  ]
+}

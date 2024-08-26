@@ -1,6 +1,6 @@
-use crate::error::handler::MirrorError;
-use crate::image::utils::*;
+use crate::mirror::utils::*;
 use custom_logger::*;
+use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -123,36 +123,28 @@ impl GenerateClusterResources {
         }
     }
 
-    pub fn untar_metadata(&self, log: &Logging) -> Result<(), MirrorError> {
+    pub async fn untar_metadata(&self, log: &Logging) -> Result<(), MirrorError> {
         // read the tar file
         log.info(&format!("processing metadata tar {}", &self.from_dir));
         let data = std::fs::File::open(&self.from_dir);
         if data.is_ok() {
-            let f_res = fs_handler("tmp-metadata".to_string(), "create_dir", None);
-            if f_res.is_ok() {
-                let mut archive = Archive::new(data.unwrap());
-                for (_i, file) in archive.entries().unwrap().enumerate() {
-                    let mut x = file.unwrap();
-                    let f = x.path().unwrap();
-                    let op_path = f.as_ref().to_string_lossy().to_string();
-                    if op_path.clone().contains(".json") {
-                        log.debug(&format!("file {}", op_path.clone()));
-                        let res = x.unpack(format!("{}/{}", "tmp-metadata", op_path.clone()));
-                        if res.is_err() {
-                            let err = MirrorError::new(&format!(
-                                "accessing archive entries {}",
-                                res.err().unwrap().to_string().to_lowercase()
-                            ));
-                            return Err(err);
-                        }
+            fs_handler("tmp-metadata".to_string(), "create_dir", None).await?;
+            let mut archive = Archive::new(data.unwrap());
+            for (_i, file) in archive.entries().unwrap().enumerate() {
+                let mut x = file.unwrap();
+                let f = x.path().unwrap();
+                let op_path = f.as_ref().to_string_lossy().to_string();
+                if op_path.clone().contains(".json") {
+                    log.debug(&format!("file {}", op_path.clone()));
+                    let res = x.unpack(format!("{}/{}", "tmp-metadata", op_path.clone()));
+                    if res.is_err() {
+                        let err = MirrorError::new(&format!(
+                            "accessing archive entries {}",
+                            res.err().unwrap().to_string().to_lowercase()
+                        ));
+                        return Err(err);
                     }
                 }
-            } else {
-                let err = MirrorError::new(&format!(
-                    "creating temp archive directory {}",
-                    f_res.err().unwrap().to_string().to_lowercase()
-                ));
-                return Err(err);
             }
         } else {
             let err = MirrorError::new(&format!(
@@ -176,7 +168,7 @@ impl GenerateClusterResources {
         Ok(())
     }
 
-    pub fn generate_idms_itms(
+    pub async fn generate_idms_itms(
         &self,
         log: &Logging,
         dir: String,
@@ -187,17 +179,20 @@ impl GenerateClusterResources {
             format!("{}/{}", dir, "cluster-resources"),
             "create_dir",
             None,
-        )?;
+        )
+        .await?;
         fs_handler(
             dir.clone() + &"/cluster-resources/idms-image-mirror.yaml",
             "write",
             Some("".to_string()),
-        )?;
+        )
+        .await?;
         fs_handler(
             dir.clone() + &"/cluster-resources/itms-image-mirror.yaml",
             "write",
             Some("".to_string()),
-        )?;
+        )
+        .await?;
 
         let vec_files: Vec<String> = vec![
             "release-image-reference.json".to_string(),
@@ -263,7 +258,7 @@ impl GenerateClusterResources {
         Ok(())
     }
 
-    pub fn generate_catalog_source(
+    pub async fn generate_catalog_source(
         &self,
         log: &Logging,
         dir: String,
@@ -274,7 +269,8 @@ impl GenerateClusterResources {
             format!("{}/{}{}", &dir, &"/cluster-resources/cs-", "image.yaml"),
             "write",
             Some("".to_string()),
-        )?;
+        )
+        .await?;
 
         //self.spec.image = catalog.replace(":", "-").replace(".", "-").to_string();
         //self.api_version = "config.openshift.io/v1".to_string();

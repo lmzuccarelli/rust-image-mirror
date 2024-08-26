@@ -1,5 +1,5 @@
-use crate::error::handler::MirrorError;
 use custom_logger::*;
+use mirror_error::MirrorError;
 use std::process::Command;
 
 pub fn build(log: &Logging, image: String, container_file: String) -> Result<(), MirrorError> {

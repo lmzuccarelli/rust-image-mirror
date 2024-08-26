@@ -1,13 +1,9 @@
 use crate::archive::create::MirrorStats;
-use crate::error::handler::MirrorError;
-use crate::image::utils::fs_handler;
-use crate::image::utils::keepalive;
-use crate::image::utils::verify_file;
+use crate::mirror::utils::{fs_handler, keepalive, verify_file};
 use custom_logger::*;
 use hex::encode;
-use mirror_copy::get_destination_registry;
-use mirror_copy::parse_json_manifest_operator;
-use mirror_copy::Manifest;
+use mirror_copy::{get_destination_registry, parse_json_manifest_operator, Manifest};
+use mirror_error::MirrorError;
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
 use std::fs::{self};
@@ -120,7 +116,7 @@ pub async fn removable_media_disk_to_mirror(
         let bar = "% completed    [--------------------------------------------------------------]"
             .to_string();
         let per_position = vec_blobs.len() as f32 / 61.0;
-        fs_handler("tmp-store".to_string(), "create_dir", None)?;
+        fs_handler("tmp-store".to_string(), "create_dir", None).await?;
 
         if !skip_blobs {
             log.hi(&format!("uploading blobs"));
@@ -200,7 +196,8 @@ pub async fn removable_media_disk_to_mirror(
                                                 "tmp-store/".to_string() + digest,
                                                 "remove_file",
                                                 None,
-                                            )?;
+                                            )
+                                            .await?;
                                             if blob_count % 10 == 0 {
                                                 let update = blob_count as f32 / per_position;
                                                 let new_bar =
@@ -231,7 +228,7 @@ pub async fn removable_media_disk_to_mirror(
                 process::exit(1);
             }
         }
-        fs_handler("tmp-store/".to_string(), "remove_dir", None)?;
+        fs_handler("tmp-store/".to_string(), "remove_dir", None).await?;
 
         // open the metadata tar file
         let mut manifest_count = 1;

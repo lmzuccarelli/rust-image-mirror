@@ -1,12 +1,13 @@
 // use modules
 use crate::additional::collector::*;
 use crate::clusterresources::generate::*;
-use crate::image::utils::fs_handler;
+use crate::mirror::utils::fs_handler;
 use crate::operator::collector::*;
 use crate::release::collector::*;
 use clap::Parser;
 use custom_logger::*;
 use mirror_copy::ImplRegistryInterface;
+use std::collections::HashMap;
 use std::process;
 use tokio;
 
@@ -18,9 +19,8 @@ mod batch;
 mod catalog;
 mod clusterresources;
 mod config;
-mod error;
 mod graphdata;
-mod image;
+mod mirror;
 mod operator;
 mod podman;
 mod release;
@@ -38,10 +38,7 @@ async fn main() {
     let args = Cli::parse();
     let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
-    let skip_manifests = args.skip_manifest_check.unwrap().to_string();
-    let dry_run = args.dry_run;
     let arch = args.architecture.to_string();
-    let verify_blobs = args.verify_blobs;
 
     // convert to enum
     let res_log_level = match level.as_str() {
@@ -94,54 +91,67 @@ async fn main() {
     ));
 
     // multi archj support
-    let mut vec_arch: Vec<&str> = Vec::new();
+    let mut vec_arch: Vec<String> = Vec::new();
     if arch == "all" {
-        vec_arch.insert(0, "amd64");
-        vec_arch.insert(0, "arm64");
-        vec_arch.insert(0, "ppc64le");
-        vec_arch.insert(0, "s390x");
-        vec_arch.insert(0, "x86_64");
+        vec_arch.insert(0, "amd64".to_string());
+        vec_arch.insert(0, "arm64".to_string());
+        vec_arch.insert(0, "ppc64le".to_string());
+        vec_arch.insert(0, "s390x".to_string());
+        vec_arch.insert(0, "x86_64".to_string());
     } else {
-        vec_arch = arch.split(",").collect();
-        vec_arch.insert(0, "x86_64");
+        vec_arch = arch.split(",").map(|v| v.to_string()).collect();
+        vec_arch.insert(0, "x86_64".to_string());
     }
+
+    let mut mp = MirrorParameters {
+        architectures: vec_arch.clone(),
+        dir: "".to_string(),
+        dry_run: args.dry_run,
+        from: args.from.clone(),
+        destination: args.destination.clone(),
+        skip_blob_upload: args.skip_blob_upload,
+        skip_manifest_check: args.skip_manifest_check.as_ref().unwrap().to_string(),
+        tls_verify: args.tls_verify,
+        verify_blobs: args.verify_blobs,
+        generic_override: HashMap::new(),
+        rebuild_catalogs: Some(true),
+    };
 
     // initialize the client request interface
     let reg_con = ImplRegistryInterface {};
 
     // this is mirrorToDisk
-    if args.destination.contains("file://") {
-        let destination = args.destination.split("file://").nth(1).unwrap();
-        log.info(&format!("destination {}", destination));
-        let res = fs_handler(
+    if mp.destination.contains("file://") {
+        let destination = mp.destination.split("file://").nth(1).unwrap();
+        let res_mm = fs_handler(
             format!("{}/{}", destination, "mirror-metadata".to_string()),
             "create_dir",
             None,
-        );
-        if res.is_err() {
-            log.error(&format!("{}", res.err().unwrap().to_string()));
+        )
+        .await;
+        if res_mm.is_err() {
+            log.error(&format!("{}", res_mm.err().unwrap().to_string()));
         }
 
-        let res = fs_handler(
+        let res_mp = fs_handler(
             format!("{}/{}", destination, "mappings".to_string()),
             "create_dir",
             None,
-        );
-        if res.is_err() {
-            log.error(&format!("{}", res.err().unwrap().to_string()));
+        )
+        .await;
+        if res_mp.is_err() {
+            log.error(&format!("{}", res_mp.err().unwrap().to_string()));
         };
 
+        mp.dir = destination.to_string();
+
         // check for release images
-        let skip_manifest_check = skip_manifests == "release" || skip_manifests == "all";
         if isc_config_final.mirror.release.is_some() {
             let res = release_mirror_to_disk(
                 reg_con.clone(),
                 log,
-                destination.to_string(),
-                skip_manifest_check,
-                dry_run,
                 isc_config_final.mirror.release.unwrap(),
-                verify_blobs,
+                mp.clone(),
             )
             .await;
             if res.is_err() {
@@ -150,17 +160,12 @@ async fn main() {
             }
         }
         // check for operators
-        let skip_manifest_check = skip_manifests == "operators" || skip_manifests == "all";
         if isc_config_final.mirror.operators.is_some() {
             let res = operator_mirror_to_disk(
                 reg_con.clone(),
                 log,
-                destination.to_string(),
-                skip_manifest_check,
-                dry_run,
                 isc_config_final.mirror.operators.unwrap(),
-                vec_arch.clone(),
-                verify_blobs,
+                mp.clone(),
             )
             .await;
 
@@ -169,17 +174,12 @@ async fn main() {
             }
         }
         // check for additional images
-        let skip_manifest_check = skip_manifests == "additional" || skip_manifests == "all";
         if isc_config_final.mirror.additional_images.is_some() {
             let res = additional_mirror_to_disk(
                 reg_con.clone(),
                 log,
-                destination.to_string(),
-                skip_manifest_check,
-                dry_run,
                 isc_config_final.mirror.additional_images.unwrap(),
-                vec_arch.clone(),
-                verify_blobs,
+                mp.clone(),
             )
             .await;
             if res.is_err() {
@@ -188,7 +188,7 @@ async fn main() {
         }
 
         // finally create tar archive
-        if !dry_run {
+        if !mp.dry_run {
             // archive_size set to 5G
             let mut archive_size = 1024 * 1024 * 1024 * 5;
             if isc_config_final.archive_size.is_some() {
@@ -196,8 +196,8 @@ async fn main() {
                 archive_size = 1024 * 1024 * 1024 * size;
             }
             log.info("creating tar files");
-            vec_arch.insert(0, "all");
-            let res = create_tar(log, destination.to_string(), archive_size, vec_arch);
+            vec_arch.insert(0, "all".to_string());
+            let res = create_tar(log, destination.to_string(), archive_size, vec_arch).await;
             if res.is_err() {
                 log.error(&format!("{}", res.err().unwrap()));
                 process::exit(1);
@@ -235,7 +235,7 @@ async fn main() {
 
         // generate idms, itms and catalog source
         let gcr = GenerateClusterResources::new(from.clone());
-        let res = gcr.untar_metadata(log);
+        let res = gcr.untar_metadata(log).await;
         if res.is_err() {
             log.error(&format!(
                 "untarring archive (metadata) {:#}",
@@ -243,12 +243,16 @@ async fn main() {
             ));
         }
 
-        let gen_res = gcr.generate_idms_itms(log, from.clone(), destination_registry.clone());
+        let gen_res = gcr
+            .generate_idms_itms(log, from.clone(), destination_registry.clone())
+            .await;
         if gen_res.is_err() {
             log.error(&format!("{}", gen_res.err().unwrap().to_string()));
         }
 
-        let gen_res = gcr.generate_catalog_source(log, from.clone(), destination_registry);
+        let gen_res = gcr
+            .generate_catalog_source(log, from.clone(), destination_registry)
+            .await;
         if gen_res.is_err() {
             log.error(&format!("{}", gen_res.err().unwrap().to_string()));
         }

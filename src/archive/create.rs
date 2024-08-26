@@ -1,8 +1,8 @@
-use crate::error::handler::MirrorError;
-use crate::image::utils::keepalive;
-use crate::image::utils::*;
+use crate::mirror::utils::keepalive;
+use crate::mirror::utils::*;
 use custom_logger::*;
 use mirror_copy::parse_json_manifest_operator;
+use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
 use std::fs::{self};
@@ -26,17 +26,17 @@ pub struct MirrorStats {
     pub metadata_size: u64,
 }
 
-pub fn create_tar(
+pub async fn create_tar(
     log: &Logging,
     base_dir: String,
     archive_size: i64,
-    vec_arch: Vec<&str>,
+    vec_arch: Vec<String>,
 ) -> Result<bool, MirrorError> {
     // create the relevant directories
-    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
-    fs_handler(base_dir.clone() + &"/artifacts", "create_dir", None)?;
-    fs_handler("tmp-manifest-dir/operator".to_string(), "create_dir", None)?;
-    fs_handler("tmp-manifest-dir/release".to_string(), "create_dir", None)?;
+    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None).await?;
+    fs_handler(base_dir.clone() + &"/artifacts", "create_dir", None).await?;
+    fs_handler("tmp-manifest-dir/operator".to_string(), "create_dir", None).await?;
+    fs_handler("tmp-manifest-dir/release".to_string(), "create_dir", None).await?;
 
     let metadata_files: Vec<&str> = vec![
         "release-image-reference.json",
@@ -59,7 +59,7 @@ pub fn create_tar(
             let op_imgrefs = parse_json_metadata(data.unwrap());
             if op_imgrefs.is_ok() {
                 for img in op_imgrefs.unwrap().iter() {
-                    if img.manifest_type == "manifest" && vec_arch.contains(&img.arch.as_ref()) {
+                    if img.manifest_type == "manifest" && vec_arch.contains(&img.arch.to_string()) {
                         let td: String;
                         if img.tag.is_some() && img.digest.len() == 0 {
                             td = format!("{}:{}", img.name.clone(), img.tag.as_ref().unwrap());
@@ -81,7 +81,7 @@ pub fn create_tar(
                             if mnfst.is_ok() {
                                 // component manifest
                                 let to = format!("tmp-blobs-dir/{}/blob", img.namespace.clone());
-                                fs_handler(to.clone(), "create_dir", None)?;
+                                fs_handler(to.clone(), "create_dir", None).await?;
                                 let manifest = mnfst.unwrap();
                                 for layer in manifest.clone().layers.unwrap().iter() {
                                     let digest = layer.digest.split(":").nth(1).unwrap();
@@ -144,7 +144,7 @@ pub fn create_tar(
 
                                 if current_size >= archive_size {
                                     total_size = total_size + current_size;
-                                    create_new_blobs_tar(base_dir.clone(), sequence)?;
+                                    create_new_blobs_tar(base_dir.clone(), sequence).await?;
                                     sequence += 1;
                                     current_size = 0;
                                 }
@@ -152,7 +152,7 @@ pub fn create_tar(
                                 // finally add manifest to temp dir
                                 let to = format!("{}/{}/digest/", img.mirror_type, img.namespace);
                                 let to_dir = format!("tmp-manifest-dir/{}", to.clone());
-                                fs_handler(to_dir.clone(), "create_dir", None)?;
+                                fs_handler(to_dir.clone(), "create_dir", None).await?;
                                 let to_file: String;
                                 if img.tag.is_some() {
                                     to_file =
@@ -224,7 +224,7 @@ pub fn create_tar(
         counter
     });
     // create the blob tar/s
-    create_new_blobs_tar(base_dir.clone(), sequence)?;
+    create_new_blobs_tar(base_dir.clone(), sequence).await?;
     drop(keepalive_send);
     let _ = join_handle.join().unwrap();
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
@@ -264,14 +264,14 @@ pub fn create_tar(
     let serialized_data = serde_json::to_string(&ms).unwrap();
     let ms_file = format!("{}/{}", base_dir.clone(), "/artifacts/mirror-stats.json");
 
-    fs_handler(ms_file, "write", Some(serialized_data))?;
-    fs_handler("tmp-manifest-dir".to_string(), "remove_dir", None)?;
-    fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None)?;
+    fs_handler(ms_file, "write", Some(serialized_data)).await?;
+    fs_handler("tmp-manifest-dir".to_string(), "remove_dir", None).await?;
+    fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None).await?;
 
     Ok(true)
 }
 
-fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
+async fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     let tar_sequence = format!(
         "{}/{}-{:0>4}.tar",
         dir.clone(),
@@ -298,8 +298,8 @@ fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     }
     tar_b.finish().expect("should flush blob contents");
     // cleanup
-    fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None)?;
-    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None)?;
+    fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None).await?;
+    fs_handler("tmp-blobs-dir".to_string(), "create_dir", None).await?;
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-use crate::error::handler::MirrorError;
+use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 
@@ -60,7 +60,7 @@ pub struct Bundle {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Release {
     #[serde(rename = "graph")]
     pub graph: Option<String>,

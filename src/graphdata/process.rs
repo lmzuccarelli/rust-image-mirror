@@ -1,9 +1,9 @@
-use crate::error::handler::MirrorError;
-use crate::image::utils::fs_handler;
+use crate::mirror::utils::fs_handler;
 use crate::podman::process::*;
 use async_trait::async_trait;
 use custom_logger::*;
 use flate2::read::GzDecoder;
+use mirror_error::MirrorError;
 use reqwest::Client;
 use std::fs;
 use std::io::Cursor;
@@ -58,24 +58,20 @@ impl GraphDataInterface for ImplGraphDataInterface {
 
     async fn build_graph_image(&self, log: &Logging, dir: String) -> Result<(), MirrorError> {
         let url = "https://api.openshift.com/api/upgrades_info/graph-data".to_string();
-
         let tar_gz_file = format!("{}/artifacts/cincinnati-graph-data.tar.gz", dir);
         let exists = Path::new(&tar_gz_file).exists();
-
         if !exists {
             let graph_res = self.get_graph_tar_gz(url.clone(), &tar_gz_file).await;
-
             if graph_res.is_err() {
-                //self.cleanup();
                 let err = MirrorError::new(&format!(
-                    "api call to graph data tar.gz {:?}",
+                    "[build-graph-image] api call to graph data tar.gz {} {}",
+                    tar_gz_file,
                     graph_res.err().unwrap().to_string().to_lowercase()
                 ));
                 return Err(err);
             }
         }
-
-        fs_handler("container".to_string(), "create_dir", None)?;
+        fs_handler("container".to_string(), "create_dir", None).await?;
         let data = std::fs::File::open(&tar_gz_file);
         if data.is_ok() {
             let gz = GzDecoder::new(data.unwrap());
@@ -91,9 +87,8 @@ impl GraphDataInterface for ImplGraphDataInterface {
                     "graph-data.containerfile".to_string(),
                 );
                 if res_build.is_err() {
-                    //self.cleanup();
                     let err = MirrorError::new(&format!(
-                        "building graph image {}",
+                        "[build-graph-image] building graph image {}",
                         res_build.err().unwrap().to_string().to_lowercase()
                     ));
                     return Err(err);
@@ -106,24 +101,22 @@ impl GraphDataInterface for ImplGraphDataInterface {
                     if res_save.is_err() {
                         //self.cleanup();
                         let err = MirrorError::new(&format!(
-                            "saving graph image {}",
+                            "[build-graph-image] saving graph image {}",
                             res_save.err().unwrap().to_string().to_lowercase()
                         ));
                         return Err(err);
                     }
                 }
             } else {
-                //self.cleanup();
                 let err = MirrorError::new(&format!(
-                    "unpack {}",
+                    "[build-graph-image] unpacking cincinnati-graph-data tar.gz {}",
                     res_archive.err().unwrap().to_string().to_lowercase()
                 ));
                 return Err(err);
             }
         } else {
-            //self.cleanup();
             let err = MirrorError::new(&format!(
-                "cincinnati-graph-data tar.gz {}",
+                "[build-graph-image] cincinnati-graph-data tar.gz {}",
                 data.err().unwrap().to_string().to_lowercase()
             ));
             return Err(err);

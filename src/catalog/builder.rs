@@ -1,10 +1,10 @@
-use crate::error::handler::MirrorError;
-use crate::image::utils::fs_handler;
-use crate::image::utils::{parse_image, process_fb_image};
+use crate::mirror::utils::fs_handler;
+use crate::mirror::utils::{parse_image, process_fb_image};
 use crate::podman::process::*;
 use crate::MirrorImageInfo;
 use custom_logger::*;
 use mirror_catalog_index::find_dir;
+use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
@@ -71,7 +71,8 @@ impl CatalogBuildInterface for ImplCatalogBuildInterface {
                     "rebuild-catalog.containerfile".to_string(),
                     "write",
                     Some(updated.to_string()),
-                )?;
+                )
+                .await?;
             } else {
                 let err = MirrorError::new(&format!(
                     "updating rebuild-catalog containerfile {}",
@@ -99,12 +100,13 @@ impl CatalogBuildInterface for ImplCatalogBuildInterface {
                 ir.namespace,
                 ir.version,
                 "operator".to_string(),
-            );
+            )
+            .await;
             if res_fbi.is_err() {
                 return Err(res_fbi.err().unwrap());
             }
             vec_mii.insert(0, res_fbi.unwrap().clone());
-            cleanup(log, ir.name);
+            cleanup(ir.name).await?;
         }
         Ok(vec_mii)
     }
@@ -126,10 +128,12 @@ async fn create_filtered_config(
     );
 
     let config_dir = find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
-
+    log.debug(&format!(
+        "[create_filtered_config] operator config directory {}",
+        config_dir
+    ));
     let configs = format!("{}/{}", "configs", catalog.package);
-    fs_handler(configs.clone(), "create_dir", None)?;
-
+    fs_handler(configs.clone(), "create_dir", None).await?;
     let file_name = format!("{}/{}/catalog.json", config_dir, catalog.package);
     // Open the path in read-only mode, returns `Result()`
     let f = File::open(&file_name);
@@ -156,21 +160,21 @@ async fn create_filtered_config(
                 let header = parse_json_header(update.clone()).unwrap();
                 let file_name =
                     format!("{}/{}-{}.json", configs.clone(), header.name, header.schema);
-                fs_handler(file_name, "write", Some(update))?;
+                fs_handler(file_name, "write", Some(update)).await?;
             }
             // last chunk
             if pos == l - 1 {
                 let update = "{".to_string() + item;
                 let header = parse_json_header(update.clone()).unwrap();
                 let file_name = format!("{}/{}-{}.json", configs, header.name, header.schema);
-                fs_handler(file_name, "write", Some(update))?;
+                fs_handler(file_name, "write", Some(update)).await?;
             }
             // everything in between
             if pos > 0 && pos <= l - 2 {
                 let update = "{".to_string() + item + "}";
                 let header = parse_json_header(update.clone()).unwrap();
                 let file_name = format!("{}/{}-{}.json", configs, header.name, header.schema);
-                fs_handler(file_name, "write", Some(update))?;
+                fs_handler(file_name, "write", Some(update)).await?;
             }
         }
     }
@@ -179,38 +183,30 @@ async fn create_filtered_config(
     // take the package, channel and bundle
     // check if the channel != defaultChannel
     let package = format!("{}/{}-{}.json", configs, catalog.package, "olm.package");
-    let pkg_data = fs::read_to_string(package.clone()).expect("should read package file");
+    let pkg_data = fs_handler(package.clone(), "read", None).await?;
     let pkg_json = parse_json_header(pkg_data.clone()).unwrap();
     if pkg_json.default_channel.is_some() {
         let default_channel = pkg_json.default_channel.unwrap();
         if catalog.channel != default_channel {
             let updated_pkg_data = pkg_data.replace(&default_channel, &catalog.channel);
-            fs_handler(package.clone(), "write", Some(updated_pkg_data))?;
+            fs_handler(package.clone(), "write", Some(updated_pkg_data)).await?;
         }
     }
     Ok(())
 }
 
-fn cleanup(log: &Logging, catalog: String) {
+async fn cleanup(catalog: String) -> Result<(), MirrorError> {
     // finally cleanup
-    let res_cfg = fs_handler("configs".to_string(), "remove_dir", None);
-    if res_cfg.is_err() {
-        log.error(&format!("{}", res_cfg.err().unwrap().to_string()));
-    }
-    let res = fs_handler(
+    fs_handler("configs".to_string(), "remove_dir", None).await?;
+    fs_handler(
         "rebuild-catalog.containerfile".to_string(),
         "remove_file",
         None,
-    );
-    if res.is_err() {
-        log.error(&format!("{}", res.err().unwrap().to_string()));
-    }
-    let res_ctlg = fs_handler(catalog, "remove_dir", None);
-    if res_ctlg.is_err() {
-        log.error(&format!("{}", res_ctlg.err().unwrap().to_string()));
-    }
+    )
+    .await?;
+    fs_handler(catalog, "remove_dir", None).await?;
+    Ok(())
 }
-
 // parse the manifest json for operator indexes only
 pub fn parse_json_header(data: String) -> Result<CatalogHeader, Box<dyn std::error::Error>> {
     // Parse the string of data into serde_json::Manifest.

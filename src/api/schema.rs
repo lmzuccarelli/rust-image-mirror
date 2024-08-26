@@ -1,6 +1,7 @@
 // module schema
 use clap::Parser;
 use serde_derive::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// rust-container-tool cli struct
 #[derive(Parser, Debug)]
@@ -56,9 +57,28 @@ pub struct Cli {
     #[arg(short, long, value_name = "skip-blob-upload", default_value = "false")]
     pub skip_blob_upload: bool,
 
-    /// set the verify-blobs flag (will enable/disbale sha56 contents with digest.
-    #[arg(short, long, value_name = "verify_blobs", default_value = "false")]
+    /// set the verify-blobs flag (will enable/disable sha56 contents with digest.
+    #[arg(short, long, value_name = "verify-blobs", default_value = "false")]
     pub verify_blobs: bool,
+
+    /// set the tls-verify flag (will use http is set to false).
+    #[arg(short, long, value_name = "tls-verify", default_value = "true")]
+    pub tls_verify: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MirrorParameters {
+    pub architectures: Vec<String>,
+    pub destination: String,
+    pub dry_run: bool,
+    pub dir: String,
+    pub from: String,
+    pub skip_blob_upload: bool,
+    pub skip_manifest_check: String,
+    pub tls_verify: bool,
+    pub verify_blobs: bool,
+    pub generic_override: HashMap<String, String>,
+    pub rebuild_catalogs: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialOrd, PartialEq, Ord, Eq)]
