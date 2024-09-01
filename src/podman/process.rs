@@ -2,7 +2,11 @@ use custom_logger::*;
 use mirror_error::MirrorError;
 use std::process::Command;
 
-pub fn build(log: &Logging, image: String, container_file: String) -> Result<(), MirrorError> {
+pub async fn build(
+    log: &Logging,
+    image: String,
+    container_file: String,
+) -> Result<(), MirrorError> {
     let output = Command::new("podman")
         .arg("build")
         //.arg("-q")
@@ -14,7 +18,7 @@ pub fn build(log: &Logging, image: String, container_file: String) -> Result<(),
         .expect("failed to execute process");
 
     if output.status.success() {
-        log.ex("build image completed successfully");
+        log.ex("[build] image completed successfully");
     }
     log.debug(&format!(
         "stdout: {}",
@@ -24,12 +28,17 @@ pub fn build(log: &Logging, image: String, container_file: String) -> Result<(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     ));
-
+    if !output.status.success() {
+        return Err(MirrorError::new(&format!(
+            "[build] {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
     assert!(output.status.success());
     Ok(())
 }
 
-pub fn save(log: &Logging, image: String, output_file: String) -> Result<(), MirrorError> {
+pub async fn save(log: &Logging, image: String, output_file: String) -> Result<(), MirrorError> {
     let output = Command::new("podman")
         .arg("save")
         .arg("--format")
@@ -42,7 +51,7 @@ pub fn save(log: &Logging, image: String, output_file: String) -> Result<(), Mir
         .expect("failed to execute process");
 
     if output.status.success() {
-        log.ex("saving image to disk completed successfully");
+        log.ex("[save] saving image to disk completed successfully");
     }
     log.debug(&format!(
         "stdout: {}",

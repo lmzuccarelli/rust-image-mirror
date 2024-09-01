@@ -44,13 +44,13 @@ pub struct MirrorManifest {
 }
 
 // collect all operator images
-pub async fn operator_mirror_to_disk<T: RegistryInterface>(
+pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
     reg_con: T,
     log: &Logging,
     operators: Vec<Operator>,
     mp: MirrorParameters,
 ) -> Result<(), MirrorError> {
-    log.hi("operator collector mode: mirror-to-disk");
+    log.hi("[operator_mirror_to_disk] collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
     fs_handler(
@@ -62,16 +62,21 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
     // parse the config - iterate through each catalog
     let img_ref = parse_index(log, operators.clone());
-    log.debug(&format!("image refs {:#?}", img_ref));
-    let blobs_dir = mp.dir.clone() + "/blobs-store/";
+    log.debug(&format!(
+        "[operator_mirror_to_disk] image refs {:#?}",
+        img_ref
+    ));
+    let blobs_dir = mp.dir.clone() + "/blobs-store";
     let mut image_vec: Vec<String> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut vec_catalog_info: Vec<CatalogCopyInfo> = Vec::new();
     let mut manifestlist: String;
+    let t_impl = ImplTokenInterface {};
 
     // get all relevant catalogs in config
     // download manifests and blobs if changed
     // untar and set /configs directory
+
     for ir in img_ref.iter() {
         let manifestlist_json = format!(
             "{}/{}/{}/manifest-list.json",
@@ -80,7 +85,14 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             ir.version.clone(),
         );
         // use token to get manifest
-        let token = get_token(log, ir.registry.clone()).await?;
+        let token = get_token(
+            t_impl.clone(),
+            log,
+            ir.registry.clone(),
+            "".to_string(),
+            mp.tls_verify,
+        )
+        .await?;
         log.trace(&format!(
             "[operator_mirror_to_disk] manifest json file {}",
             manifestlist_json
@@ -92,7 +104,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 ir.registry, ir.namespace, ir.name, ir.version
             );
 
-            log.mid(&format!(
+            log.info(&format!(
                 "[operator_mirror_to_disk] api call manifest for {}",
                 format!(
                     "{}/{}/{}/{}",
@@ -109,9 +121,11 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
             // this should get a manifestlist
             let res = reg_con
+                .clone()
                 .get_manifest(manifest_url.clone(), token.clone())
                 .await?;
             fs_handler(mfstlist_dir, "create_dir", None).await?;
+
             let res_manifestlist = process_and_update_manifest(
                 log,
                 res.clone(),
@@ -119,11 +133,15 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 mp.clone().generic_override,
             )
             .await?;
-            log.warn(&format!(
+            log.trace(&format!(
                 "[operator_mirror_to_disk] result from api call {}",
                 res.clone()
             ));
             if res_manifestlist.is_some() {
+                log.debug(&format!(
+                    "[operator_mirror_to_disk] process_and_update_manifest change {}",
+                    res_manifestlist.as_ref().unwrap().clone()
+                ));
                 manifestlist = fs_handler(res_manifestlist.unwrap().clone(), "read", None).await?;
             } else {
                 manifestlist = res.clone();
@@ -173,66 +191,78 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 "[operator_mirror_to_disk] main operator manifest file {}",
                 manifest_json
             ));
-            if cache_exists {
-                let changed = process_and_update_manifest(
-                    log,
-                    manifest.clone(),
-                    manifest_json.clone(),
-                    mp.clone().generic_override,
-                )
-                .await?;
-                if changed.is_some() {
-                    log.info("[operator_mirror_to_disk] detected change in manifest");
-                    let changed_manifest =
-                        fs_handler(changed.unwrap().clone(), "read", None).await?;
-                    let res_pm = parse_json_manifest_operator(changed_manifest.clone())?;
+            let changed = process_and_update_manifest(
+                log,
+                manifest.clone(),
+                manifest_json.clone(),
+                mp.clone().generic_override,
+            )
+            .await?;
+            if changed.is_some() {
+                log.info("[operator_mirror_to_disk] detected change in manifest");
+                let changed_manifest = fs_handler(changed.unwrap().clone(), "read", None).await?;
+                let res_pm = parse_json_manifest_operator(changed_manifest.clone())?;
+
+                if cache_exists {
                     // detected a change so clean the dir contents
                     rm_rf::remove(&working_dir_cache)
                         .expect("[operator_mirror_to_disk] should delete current untarred cache");
-                    // re-create the cache directory
-                    let mut builder = DirBuilder::new();
-                    builder.mode(0o777);
-                    builder
-                        .create(&working_dir_cache)
-                        .expect("[operator_mirror_to_disk] unable to create directory");
-                    let mut fslayers: Vec<FsLayer> = vec![];
-                    for l in res_pm.clone().layers.unwrap().iter() {
-                        let fsl = FsLayer {
-                            blob_sum: l.digest.clone(),
-                            original_ref: Some(ir.name.clone()),
-                            size: Some(l.size),
-                            number: None,
-                        };
-                        fslayers.insert(0, fsl);
-                    }
-                    let blobs_url = format!(
-                        "https://{}/v2/{}/{}/blobs/",
-                        ir.registry, ir.namespace, ir.name
-                    );
-                    let mut hm: HashMap<String, Vec<FsLayer>> = HashMap::new();
-                    hm.insert(blobs_url, fslayers.clone());
-                    // use a concurrent process to get related blobs
-                    execute_batch(log, blobs_dir.clone(), mp.verify_blobs, mp.tls_verify, hm)
-                        .await?;
-                    log.debug(&format!(
-                        "[operator_mirror_to_disk] completed image index download"
-                    ));
-                    log.debug(&format!(
-                        "[operator_mirror_to_disk] map {:#?}",
-                        fslayers.clone(),
-                    ));
+                }
+                // re-create the cache directory
+                let mut builder = DirBuilder::new();
+                builder.mode(0o777);
+                builder
+                    .create(&working_dir_cache)
+                    .expect("[operator_mirror_to_disk] unable to create directory");
 
-                    untar_layers(
-                        log,
-                        blobs_dir.clone(),
-                        working_dir_cache.clone(),
-                        fslayers.clone(),
-                    )
-                    .await;
-                    log.hi("[operator_mirror_to_disk] completed untar of layers");
-                    // find the directory 'configs'
-                    let config_dir =
-                        find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
+                let mut fslayers: Vec<FsLayer> = vec![];
+                for l in res_pm.clone().layers.unwrap().iter() {
+                    let fsl = FsLayer {
+                        blob_sum: l.digest.clone(),
+                        original_ref: Some(ir.name.clone()),
+                        size: Some(l.size),
+                        number: None,
+                    };
+                    fslayers.insert(0, fsl);
+                }
+                let blobs_url = format!(
+                    "https://{}/v2/{}/{}/blobs/",
+                    ir.registry, ir.namespace, ir.name
+                );
+                let mut hm: HashMap<String, Vec<FsLayer>> = HashMap::new();
+                hm.insert(blobs_url, fslayers.clone());
+                // use a concurrent process to get related blobs
+                execute_batch(
+                    reg_con.clone(),
+                    log,
+                    blobs_dir.clone(),
+                    mp.verify_blobs,
+                    mp.tls_verify,
+                    hm,
+                )
+                .await?;
+                log.debug(&format!(
+                    "[operator_mirror_to_disk] completed image index download"
+                ));
+                log.debug(&format!(
+                    "[operator_mirror_to_disk] map {:#?}",
+                    fslayers.clone(),
+                ));
+                untar_layers(
+                    log,
+                    blobs_dir.clone(),
+                    working_dir_cache.clone(),
+                    fslayers.clone(),
+                )
+                .await;
+
+                log.hi("[operator_mirror_to_disk] completed untar of layers");
+                // find the directory 'configs'
+                let config_dir =
+                    find_dir(log, working_dir_cache.clone(), "configs".to_string()).await;
+                if config_dir.len() == 0 {
+                    log.warn("[operator_mirror_to_disk] 'configs' directory is empty");
+                } else {
                     log.mid(&format!(
                         "[operator_mirror_to_disk] full path for directory 'configs' {} ",
                         &config_dir
@@ -268,7 +298,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                 let dc_map = DeclarativeConfig::get_declarativeconfig_map(
                     config_dir.clone() + &"/" + &pkg.name.clone() + &"/updated-configs/",
                 );
-                log.mid(&format!(
+                log.ex(&format!(
                     "[operator_mirror_to_disk] operator {:#?}",
                     pkg.name
                 ));
@@ -348,7 +378,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                     "https://{}/v2/{}/{}/manifests/{}",
                                     ir_pkg.registry, ir_pkg.namespace, ir_pkg.name, ir_pkg.version
                                 );
-                                log.ex(&format!(
+                                log.debug(&format!(
                                     "[operator_mirror_to_disk] checking manifest {:#?}",
                                     ir_pkg.namespace.clone() + "/" + &ir_pkg.name
                                 ));
@@ -432,7 +462,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                                 mf.digest.as_ref().unwrap()
                                             );
 
-                                            log.mid(&format!(
+                                            log.info(&format!(
                                                 "[operator_mirror_to_disk] api call for manifest {}/{}",
                                                 arch_img.namespace.clone(),
                                                 arch_img.name.clone()
@@ -565,8 +595,15 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
                                 in_map.insert(op_url.clone(), fslayers.clone());
                             }
                             let map = remove_duplicates(mp.dir.clone(), in_map);
-                            execute_batch(log, mp.dir.clone(), mp.verify_blobs, mp.tls_verify, map)
-                                .await?;
+                            execute_batch(
+                                reg_con.clone(),
+                                log,
+                                blobs_dir.clone(),
+                                mp.verify_blobs,
+                                mp.tls_verify,
+                                map,
+                            )
+                            .await?;
                         }
                     } else {
                         log.error(&format!(
@@ -587,7 +624,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
 
     if mp.rebuild_catalogs.is_some() && mp.rebuild_catalogs.unwrap() {
         let g_bc = ImplCatalogBuildInterface {};
-        log.mid("[operator_mirror_to_disk] rebuild catalog index");
+        log.info("[operator_mirror_to_disk] rebuild catalog index");
         let res = g_bc
             .build_catalog(log, mp.dir.clone(), vec_catalog_info)
             .await?;
@@ -626,7 +663,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface>(
             Some(buf),
         )
         .await?;
-        log.mid(&format!(
+        log.ex(&format!(
             "[operator_mirror_to_disk] created operator mapping file in folder {}",
             mp.dir.clone() + &"/mappings/",
         ));
@@ -701,8 +738,39 @@ mod tests {
 
     #[test]
     fn operator_mirror_to_disk_pass() {
+        let _ = aw!(fs_handler(
+            "test-artifacts/mirror-metadata".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/mappings".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/ac".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/5f".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/manifests".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/artifacts".to_string(),
+            "creat_dir",
+            None
+        ));
+
         let log = &Logging {
-            log_level: Level::DEBUG,
+            log_level: Level::INFO,
         };
 
         #[derive(Clone)]
@@ -745,7 +813,6 @@ mod tests {
                 url: String,
                 _token: String,
             ) -> Result<String, MirrorError> {
-                println!("DEBUG LMZ {}", url);
                 let content = match url.clone() {
                     x if x.contains("test-index-operator/manifests/v1.0") => {
                         let content = fs::read_to_string(
@@ -817,6 +884,24 @@ mod tests {
                 Ok(content.to_string())
             }
 
+            async fn get_blob(
+                &self,
+                log: &Logging,
+                dir: String,
+                url: String,
+                _token: String,
+                _verify_blob: bool,
+                _blob_sum: String,
+            ) -> Result<(), MirrorError> {
+                log.info(&format!("babooch kaka {}", dir));
+                log.info(&format!("babooch kaka {}", url));
+                //if url.contains("v2/test/test-index-operator/blobs/") {
+                fs::copy("test-artifacts/test-index-operator/copy-cache/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f".to_string(),
+                    "test-artifacts/blobs-store/5f/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f".to_string()).expect("should bopy baba");
+                //}
+                Ok(())
+            }
+
             async fn get_blobs(
                 &self,
                 _log: &Logging,
@@ -842,21 +927,6 @@ mod tests {
         }
 
         let fake = Fake {};
-
-        fs::create_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should create mirror-metadata test folder");
-        fs::create_dir_all("./test-artifacts/mappings")
-            .expect("should create mappings test folder");
-        fs::create_dir_all("./test-artifacts/blobs-store/ac")
-            .expect("should create blobs-store test folder");
-        fs::create_dir_all("./test-artifacts/blobs-store/5f")
-            .expect("should create blobs-store test folder");
-        fs::create_dir_all("./test-artifacts/manifests")
-            .expect("should create manifests test folder");
-        fs::create_dir_all("./test-artifacts/artifacts")
-            .expect("should create artifacts test folder");
-        fs::copy("test-artifacts/test-index-operator/copy-cache/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f",
-        "test-artifacts/blobs-store/5f/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f").expect("should copy blob");
 
         let bundle = Bundle {
             name: String::from("aws-load-balancer-operator.v1.0.0"),
@@ -968,15 +1038,35 @@ mod tests {
         }
         assert_eq!(res.is_ok(), true);
 
-        fs::remove_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should delete mirror-metadata test folder");
-        fs::remove_dir_all("./test-artifacts/mappings")
-            .expect("should delete mappings test folder");
-        fs::remove_dir_all("./test-artifacts/blobs-store/ac")
-            .expect("should delete blobs-store test folder");
-        fs::remove_dir_all("./test-artifacts/manifests")
-            .expect("should delete manifests test folder");
-        fs::remove_dir_all("./test-artifacts/artifacts")
-            .expect("should delete artifacts test folder");
+        let _ = aw!(fs_handler(
+            "test-artifacts/mirror-metadata".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/mappings".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/ac".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/5f".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/manifests".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/artifacts".to_string(),
+            "remove_dir",
+            None
+        ));
     }
 }

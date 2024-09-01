@@ -1,43 +1,58 @@
 use crate::archive::create::MirrorStats;
-use crate::mirror::utils::{fs_handler, keepalive, verify_file};
+use crate::mirror::upload::*;
+use crate::mirror::utils::parse_json_manifest_operator;
+use crate::mirror::utils::{fs_handler, keepalive};
+use crate::MirrorParameters;
 use custom_logger::*;
-use hex::encode;
-use mirror_copy::{get_destination_registry, parse_json_manifest_operator, Manifest};
+use mirror_auth::{get_token, ImplTokenInterface};
 use mirror_error::MirrorError;
-use reqwest::{Client, StatusCode};
-use sha2::{Digest, Sha256};
 use std::fs::{self};
 use std::io::Read;
-use std::process;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use tar::Archive;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 
-pub async fn removable_media_disk_to_mirror(
+pub async fn removable_media_disk_to_mirror<T: ProcessImageInterface>(
+    g_impl: T,
     log: &Logging,
     from: String,
     destination: String,
-    skip_blobs: bool,
-    skip_verify: bool,
+    mp: MirrorParameters,
 ) -> Result<(), MirrorError> {
     // open the blobs tar
-    log.hi("removable media collector mode: disk-to-mirror");
+    log.hi("[removable_media_disk_to_mirror] collector mode: disk-to-mirror");
 
     // read stats data
-    let ms_data = fs::read_to_string(format!("{}/{}", from.clone(), "mirror-stats.json"));
-    let ms: MirrorStats = serde_json::from_str(ms_data.as_ref().unwrap()).unwrap();
+    let ms_data = fs_handler(
+        format!("{}/{}", from.clone(), "mirror-stats.json"),
+        "read",
+        None,
+    )
+    .await?;
+    let ms: MirrorStats = serde_json::from_str(&ms_data.clone()).unwrap();
 
     // first check if we have manifests (using http HEAD)
     // open the manifests tar file
     let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
     let mut vec_blobs: Vec<String> = Vec::new();
     let mut vec_manifests: Vec<String> = Vec::new();
+    let t_impl = ImplTokenInterface {};
+
+    let url = destination.split("docker://").nth(1).unwrap();
+    let registry = url.split("/").nth(0).unwrap();
+    let registry_namespace = url.split("/").nth(1).unwrap();
 
     if data.is_ok() {
-        log.ex(&format!("checking {} remote manifests", ms.manifest_count));
+        log.ex(&format!(
+            "[removable_media_disk_to_mirror] checking {} remote manifests",
+            ms.manifest_count
+        ));
+        let bar = "% completed    [---------------------------------------------------------------------]"
+            .to_string();
+        let per_position = ms.manifest_count as f32 / 74.0;
+        let mut count = 1;
         let mut archive = Archive::new(data.unwrap());
+        log.mid(&bar);
         for (_i, file) in archive.entries().unwrap().enumerate() {
             let f = file.as_ref().unwrap().path().unwrap();
             let name = f.file_name();
@@ -47,13 +62,9 @@ pub async fn removable_media_disk_to_mirror(
                     let mnfst = &mut "".to_string();
                     let mut ex = file.unwrap();
                     let res = ex.read_to_string(mnfst);
-                    if res.is_err() {
-                        log.error(&format!("{:#?}", res.err().unwrap()));
-                        process::exit(1);
-                    }
-                    let manifest = parse_json_manifest_operator(mnfst.to_string());
-                    let path = op_path.split("/digest/").nth(0).unwrap();
-                    let sha = op_path.split("/digest/").nth(1).unwrap();
+                    log.debug(&format!("{:#?}", res.as_ref().unwrap()));
+                    let manifest = parse_json_manifest_operator(mnfst.to_string())?;
+                    let (path, sha) = op_path.split_once("/digest/").unwrap();
                     let mut sha_clean = sha.split("-").nth(0).unwrap().to_string();
                     if !sha.contains("sha256:") {
                         sha_clean = sha.split(".json").nth(0).unwrap().to_string();
@@ -67,25 +78,48 @@ pub async fn removable_media_disk_to_mirror(
                         _ => "none".to_string(),
                     };
                     let ns = path.split(&splitter).nth(1).unwrap();
-
                     if res.is_ok() {
-                        let req_res = check_manifest(
+                        // start our spinner
+                        log.ex(&format!("  checking manifest {}", path));
+                        let (keepalive_send, keepalive_recv) = keepalive::channel();
+                        let join_handle = spawn(move || {
+                            let counter = 0;
+                            let spinner = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                            while keepalive_recv.is_alive() {
+                                for x in 0..9 {
+                                    println!("\x1b[1A \x1b[38C{}", spinner[x]);
+                                    sleep(Duration::from_millis(50));
+                                }
+                            }
+                            counter
+                        });
+                        let local_token = get_token(
+                            t_impl.clone(),
                             log,
-                            destination.clone(),
-                            ns.to_string(),
-                            sha_clean.to_string(),
-                            "".to_string(),
+                            registry.to_string(),
+                            format!("{}/{}", registry_namespace, ns),
+                            mp.tls_verify,
                         )
-                        .await;
+                        .await?;
+                        let req_res = g_impl
+                            .check_manifest(
+                                log,
+                                registry.to_string(),
+                                format!("{}/{}", registry_namespace, ns),
+                                sha_clean.to_string(),
+                                local_token.clone(),
+                            )
+                            .await;
+                        drop(keepalive_send);
+                        let _ = join_handle.join().unwrap();
+
                         if req_res.is_err() {
                             // build the missing blobs
-                            let m = manifest.as_ref().unwrap();
+                            let m = manifest.clone();
                             for layer in m.clone().layers.unwrap().iter() {
                                 let blob =
                                     layer.digest.split("sha256:").nth(1).unwrap().to_string();
-                                //if !vec_blobs.contains(&blob) {
                                 vec_blobs.insert(0, blob.clone());
-                                //}
                             }
                             // add the config
                             let cfg_blob = m
@@ -93,33 +127,52 @@ pub async fn removable_media_disk_to_mirror(
                                 .config
                                 .unwrap()
                                 .digest
+                                .clone()
                                 .split("sha256:")
                                 .nth(1)
                                 .unwrap()
                                 .to_string();
-                            //if !vec_blobs.contains(&cfg_blob) {
                             vec_blobs.insert(0, cfg_blob.clone());
-                            //}
                             vec_manifests.insert(0, op_path.clone());
+                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;93m*\x1b[0m");
+                        } else {
+                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                         }
+                        if count % 10 == 0 {
+                            let update = count as f32 / per_position;
+                            let new_bar = bar.replacen("-", "#", update.floor() as usize);
+                            log.mid(&new_bar);
+                        }
+                        count += 1;
                     }
                 }
             }
         }
+    } else {
+        return Err(MirrorError::new(&format!(
+            "[removable_media_disk_to_mirror] reading mirror-manifest.tar {}",
+            data.err().unwrap().to_string().to_lowercase()
+        )));
     }
 
-    log.debug(&format!("missing blobs {:#?}", vec_blobs));
-    log.debug(&format!("missing manifests {:#?}", vec_manifests));
+    log.debug(&format!(
+        "[removable_media_disk_to_mirror] missing blobs {:#?}",
+        vec_blobs
+    ));
+    log.debug(&format!(
+        "[removable_media_disk_to_mirror] missing manifests {:#?}",
+        vec_manifests
+    ));
 
     if vec_blobs.len() > 0 {
         let mut blob_count = 1;
-        let bar = "% completed    [--------------------------------------------------------------]"
+        let bar = "% completed    [---------------------------------------------------------------------]"
             .to_string();
-        let per_position = vec_blobs.len() as f32 / 61.0;
+        let per_position = vec_blobs.len() as f32 / 74.0;
         fs_handler("tmp-store".to_string(), "create_dir", None).await?;
 
-        if !skip_blobs {
-            log.hi(&format!("uploading blobs"));
+        if !mp.skip_blob_upload {
+            log.hi(&format!("[removable_media_disk_to_mirror] uploading blobs"));
             let tars = fs::read_dir(from.clone());
             if tars.is_ok() {
                 log.mid(&bar);
@@ -136,16 +189,11 @@ pub async fn removable_media_disk_to_mirror(
                                     let f = x.path().unwrap();
                                     let op_path = f.as_ref().to_string_lossy().to_string();
                                     if op_path.clone().contains("/blob/") {
-                                        let path = op_path.split("/blob/").nth(0).unwrap();
-                                        let digest = op_path.split("/blob/").nth(1).unwrap();
+                                        let (path, digest) = op_path.split_once("/blob/").unwrap();
                                         if vec_blobs.contains(&digest.to_string()) {
                                             let res = x.unpack("tmp-store/".to_string() + digest);
-                                            if res.is_err() {
-                                                log.error(&format!("{:?}", res.err().unwrap()));
-                                                continue;
-                                            }
-                                            log.debug(&format!("path {}", op_path));
-                                            log.ex(&format!("  pushing blob {}", digest));
+                                            log.debug(&format!("[removable_media_disk_to_mirror] result from unpack {:?}",res.unwrap()));
+                                            log.ex(&format!("  pushing blob sha256:{}", digest));
                                             // start our spinner
                                             let (keepalive_send, keepalive_recv) =
                                                 keepalive::channel();
@@ -164,34 +212,50 @@ pub async fn removable_media_disk_to_mirror(
                                                 counter
                                             });
 
-                                            let req_res = process_blob(
+                                            // cleanup path
+                                            let updated_path = path.replace("./", "");
+                                            let local_token = get_token(
+                                                t_impl.clone(),
                                                 log,
-                                                "tmp-store".to_string(),
-                                                skip_verify,
-                                                digest.to_string(),
-                                                destination.clone(),
-                                                path.to_string(),
-                                                "".to_string(),
+                                                registry.to_string(),
+                                                format!(
+                                                    "{}/{}",
+                                                    registry_namespace,
+                                                    updated_path.clone(),
+                                                ),
+                                                mp.tls_verify,
                                             )
-                                            .await;
+                                            .await?;
+                                            let req_res = g_impl
+                                                .process_blob(
+                                                    log,
+                                                    registry.to_string(),
+                                                    format!(
+                                                        "{}/{}",
+                                                        registry_namespace,
+                                                        updated_path.to_string()
+                                                    ),
+                                                    "tmp-store".to_string(),
+                                                    mp.verify_blobs,
+                                                    digest.to_string(),
+                                                    local_token.clone(),
+                                                )
+                                                .await;
+                                            drop(keepalive_send);
+                                            let _ = join_handle.join().unwrap();
+
                                             if req_res.is_err() {
                                                 println!(
                                                     "\x1b[1A \x1b[38C{}",
                                                     "\x1b[1;91m✗\x1b[0m"
                                                 );
-                                                log.error(&format!(
-                                                    "{}",
-                                                    req_res
-                                                        .err()
-                                                        .unwrap()
-                                                        .to_string()
-                                                        .to_lowercase()
-                                                ));
-                                                process::exit(1);
+                                                //process::exit(1);
+                                            } else {
+                                                println!(
+                                                    "\x1b[1A \x1b[38C{}",
+                                                    "\x1b[1;92m✓\x1b[0m"
+                                                );
                                             }
-                                            drop(keepalive_send);
-                                            let _ = join_handle.join().unwrap();
-                                            println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                                             fs_handler(
                                                 "tmp-store/".to_string() + digest,
                                                 "remove_file",
@@ -209,23 +273,16 @@ pub async fn removable_media_disk_to_mirror(
                                     }
                                 }
                             } else {
-                                log.error(&format!(
-                                    "reading mirroror-blobs.tar {:}",
+                                return Err(MirrorError::new(&format!(
+                                    "[removable_media_disk_to_mirror] reading mirror-blobs.tar {:}",
                                     data.err().unwrap().to_string().to_lowercase()
-                                ));
-                                process::exit(1);
+                                )));
                             }
                         }
                     }
                 }
-                let new_bar = bar.replacen("-", "#", 62);
+                let new_bar = bar.replacen("-", "#", 69);
                 log.mid(&new_bar);
-            } else {
-                log.error(&format!(
-                    "reading mirror-blobs tar files {}",
-                    tars.err().unwrap().to_string().to_lowercase()
-                ));
-                process::exit(1);
             }
         }
         fs_handler("tmp-store/".to_string(), "remove_dir", None).await?;
@@ -233,12 +290,15 @@ pub async fn removable_media_disk_to_mirror(
         // open the metadata tar file
         let mut manifest_count = 1;
         let data = std::fs::File::open(from.clone() + &"/mirror-manifests.tar");
-        let bar = "% completed    [--------------------------------------------------------------]"
+        let bar = "% completed    [---------------------------------------------------------------------]"
             .to_string();
-        let per_position = vec_manifests.len() as f32 / 61.0;
+        let per_position = vec_manifests.len() as f32 / 74.0;
 
         if data.is_ok() {
-            log.hi(&format!("uploading {} manifests", vec_manifests.len()));
+            log.hi(&format!(
+                "[removable_media_disk_to_mirror] uploading {} manifests",
+                vec_manifests.len()
+            ));
             let mut archive = Archive::new(data.unwrap());
             log.mid(&bar);
             for (_i, file) in archive.entries().unwrap().enumerate() {
@@ -251,13 +311,9 @@ pub async fn removable_media_disk_to_mirror(
                             let manifest = &mut "".to_string();
                             let mut ex = file.unwrap();
                             let res = ex.read_to_string(manifest);
-                            if res.is_err() {
-                                log.error(&format!("{:#?}", res.err().unwrap()));
-                                process::exit(1);
-                            }
-                            let mfst = parse_json_manifest_operator(manifest.to_string());
-                            let path = op_path.split("/digest/").nth(0).unwrap();
-                            let sha = op_path.split("/digest/").nth(1).unwrap();
+                            log.debug(&format!("{:?}", res.as_ref().unwrap()));
+                            let mfst = parse_json_manifest_operator(manifest.to_string())?;
+                            let (path, sha) = op_path.split_once("/digest/").unwrap();
                             let mut sha_clean = sha.split("-").nth(0).unwrap();
                             if !sha.contains("sha256:") {
                                 sha_clean = sha.split(".json").nth(0).unwrap();
@@ -269,26 +325,31 @@ pub async fn removable_media_disk_to_mirror(
                                 _ => "none".to_string(),
                             };
                             let ns = path.split(&splitter).nth(1).unwrap();
+                            let local_token = get_token(
+                                t_impl.clone(),
+                                log,
+                                registry.to_string(),
+                                format!("{}/{}", registry_namespace, ns.to_string()),
+                                mp.tls_verify,
+                            )
+                            .await?;
                             log.ex(&format!("  pushing manifest {}", ns));
                             if res.is_ok() {
-                                let req_res = process_manifests(
-                                    log,
-                                    mfst.unwrap(),
-                                    destination.clone(),
-                                    ns.to_string(),
-                                    sha_clean.to_string(),
-                                    "".to_string(),
-                                )
-                                .await;
+                                let req_res = g_impl
+                                    .process_manifests(
+                                        log,
+                                        registry.to_string(),
+                                        format!("{}/{}", registry_namespace, ns.to_string()),
+                                        mfst.clone(),
+                                        sha_clean.to_string(),
+                                        local_token.clone(),
+                                    )
+                                    .await;
                                 if req_res.is_err() {
                                     println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
-                                    log.error(&format!(
-                                        "{:?}",
-                                        req_res.err().unwrap().to_string().to_lowercase()
-                                    ));
-                                    process::exit(1);
+                                } else {
+                                    println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                                 }
-                                println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
                                 manifest_count += 1;
                                 if manifest_count % 10 == 0 {
                                     let update = manifest_count as f32 / per_position;
@@ -297,256 +358,164 @@ pub async fn removable_media_disk_to_mirror(
                                 }
                             } else {
                                 println!("\x1b[1A \x1b[38C{}", "\x1b[1;91m✗\x1b[0m");
-                                log.error(&format!(
-                                    "{:?}",
-                                    res.err().unwrap().to_string().to_lowercase()
-                                ));
-                                process::exit(1);
                             }
                         }
                     }
                 }
             }
-            let new_bar = bar.replacen("-", "#", 62);
+            let new_bar = bar.replacen("-", "#", 69);
             log.mid(&new_bar);
         } else {
-            log.error(&format!(
-                "reading mirror-manifest.tar {:?}",
+            return Err(MirrorError::new(&format!(
+                "[removable_media_disk_to_mirror] reading mirror-manifest.tar {}",
                 data.err().unwrap().to_string().to_lowercase()
-            ));
-            process::exit(1);
+            )));
         }
     }
     Ok(())
 }
 
-pub async fn process_blob(
-    log: &Logging,
-    dir: String,
-    skip_verify: bool,
-    blob: String,
-    url: String,
-    namespace: String,
-    token: String,
-) -> Result<String, MirrorError> {
-    let client = Client::new();
-    let client = client.clone();
-    let mut header_bearer: String = "Bearer ".to_owned();
-    header_bearer.push_str(&token);
+#[cfg(test)]
+mod tests {
+    // this brings everything from parent's scope into this scope
+    use super::*;
+    use async_trait::async_trait;
+    use mirror_copy::Manifest;
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::time;
 
-    let head_url = get_destination_registry(
-        url.clone(),
-        namespace.clone(),
-        String::from("http_blobs_digest"),
-    );
-
-    let post_url = get_destination_registry(
-        url.clone(),
-        namespace.clone(),
-        String::from("http_blobs_uploads"),
-    );
-
-    let res = client
-        .post(post_url.clone())
-        .header("Accept", "application/json")
-        .send()
-        .await;
-
-    if res.is_ok() {
-        if res.as_ref().unwrap().status() != StatusCode::ACCEPTED {
-            let err = MirrorError::new(&format!(
-                "initial post failed with status {:#?}",
-                res.unwrap().status()
-            ));
-            return Err(err);
-        }
-    } else {
-        let err = MirrorError::new(&format!(
-            "{:?}",
-            res.err().unwrap().to_string().to_lowercase()
-        ));
-        return Err(err);
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
     }
 
-    let response = res.unwrap();
-    log.debug(&format!("headers {:#?}", response.headers()));
-    let location = response.headers().get("Location").unwrap();
+    #[test]
+    fn removable_media_disk_to_mirror_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
 
-    //log.hi(&format!("pushing blob {}", &blob));
+        #[derive(Clone)]
+        struct Fake {}
 
-    let res_head = client
-        .head(head_url.clone() + &blob)
-        .header("Accept", "application/json")
-        .send()
-        .await;
+        #[async_trait]
+        impl ProcessImageInterface for Fake {
+            async fn process_manifests(
+                &self,
+                _log: &Logging,
+                url: String,
+                _namespace: String,
+                _manifest: Manifest,
+                _tag_digest: String,
+                _token: String,
+            ) -> Result<String, MirrorError> {
+                let millis = time::Duration::from_millis(100);
+                sleep(millis);
+                if url.contains("manifest-error") {
+                    return Err(MirrorError::new("processing manifest"));
+                }
+                Ok("ok".to_string())
+            }
 
-    let head_response = res_head.unwrap();
+            async fn check_manifest(
+                &self,
+                _log: &Logging,
+                _url: String,
+                _namespace: String,
+                _tag_digest: String,
+                _token: String,
+            ) -> Result<String, MirrorError> {
+                let millis = time::Duration::from_millis(100);
+                sleep(millis);
+                Err(MirrorError::new("manifests missing"))
+            }
 
-    // if blob is not found we need to upload it
-    if head_response.status() == StatusCode::NOT_FOUND {
-        let mut file = File::open(dir.clone() + &"/" + &blob).await.unwrap();
-        let mut vec_bytes = Vec::new();
-        let _buf = file.read_to_end(&mut vec_bytes).await.unwrap();
-        if !skip_verify {
-            let res = verify_file(
-                log,
-                dir.clone(),
-                blob.clone(),
-                vec_bytes.len() as u64,
-                vec_bytes.clone(),
-            )
-            .await;
-            if res.is_err() {
-                let err = MirrorError::new(&format!("{}", res.err().unwrap().to_string(),));
-                return Err(err);
+            async fn process_blob(
+                &self,
+                _log: &Logging,
+                url: String,
+                _namespace: String,
+                _dir: String,
+                _skip_verify: bool,
+                _blob: String,
+                _token: String,
+            ) -> Result<String, MirrorError> {
+                let millis = time::Duration::from_millis(100);
+                sleep(millis);
+                if url.contains("blob-error") {
+                    return Err(MirrorError::new("processing blob"));
+                }
+                Ok("ok".to_string())
             }
         }
-        let url = location.to_str().unwrap().to_string() + &"&digest=sha256:" + &blob;
-        log.debug(&format!("url  {:#?}", url.clone()));
 
-        log.debug(&format!(
-            "content info  {:#?} {:#?}",
-            vec_bytes.clone().len(),
-            &blob
+        let mp = MirrorParameters {
+            architectures: vec![
+                "amd64".to_string(),
+                "arm64".to_string(),
+                "ppc64le".to_string(),
+                "s390x".to_string(),
+            ],
+            destination: "".to_string(),
+            dry_run: false,
+            dir: "./test-artifacts".to_string(),
+            from: "".to_string(),
+            skip_blob_upload: false,
+            skip_manifest_check: "none".to_string(),
+            tls_verify: false,
+            verify_blobs: false,
+            generic_override: HashMap::new(),
+            rebuild_catalogs: Some(false),
+        };
+
+        let fake = Fake {};
+        let updated_url = format!("{}/{}", "docker://localhost:5000/test", "test-namespace");
+        let res = aw!(removable_media_disk_to_mirror(
+            fake.clone(),
+            log,
+            "test-artifacts/do-not-delete/artifacts".to_string(),
+            updated_url,
+            mp.clone(),
         ));
+        assert_eq!(res.is_ok(), true);
 
-        let res_put = client
-            .put(url)
-            .body(vec_bytes.clone())
-            .header("Content-Type", "application/octet-stream")
-            .header("Content-Length", vec_bytes.len())
-            .send()
-            .await;
+        let updated_url = format!(
+            "{}/{}",
+            "docker://localhost:5000/manifest-error", "manifest-error"
+        );
+        let res = aw!(removable_media_disk_to_mirror(
+            fake.clone(),
+            log,
+            "test-artifacts/do-not-delete/artifacts".to_string(),
+            updated_url,
+            mp.clone(),
+        ));
+        assert_eq!(res.is_ok(), true);
 
-        let res_final = res_put.unwrap();
+        let updated_url = format!("{}/{}", "docker://localhost:5000/blob-error", "blob-error");
+        let res = aw!(removable_media_disk_to_mirror(
+            fake.clone(),
+            log,
+            "test-artifacts/do-not-delete/artifacts".to_string(),
+            updated_url,
+            mp.clone(),
+        ));
+        assert_eq!(res.is_ok(), true);
 
-        log.debug(&format!("result from put blob {:#?}", res_final.status()));
-
-        if res_final.status() > StatusCode::CREATED {
-            let err = MirrorError::new(&format!(
-                "put blob failed with code {} : message {:#?}",
-                res_final.status(),
-                res_final.text().await.unwrap().to_string()
-            ));
-            return Err(err);
+        if Path::new("test-artifacts/missing-files/artifacts/mirror-manifests.tar").exists() {
+            fs::remove_file("test-artifacts/missing-files/artifacts/mirror-manifests.tar")
+                .expect("should delete tar file");
         }
-    }
-    Ok(String::from("ok"))
-}
-
-pub async fn process_manifests(
-    log: &Logging,
-    manifest: Manifest,
-    url: String,
-    namespace: String,
-    tag_digest: String,
-    token: String,
-) -> Result<String, MirrorError> {
-    let client = Client::new();
-    let client = client.clone();
-    let mut header_bearer: String = "Bearer ".to_owned();
-    header_bearer.push_str(&token);
-
-    // finally push the manifest
-    let serialized_manifest = serde_json::to_string(&manifest.clone()).unwrap();
-    log.debug(&format!("manifest json {:#?}", serialized_manifest.clone()));
-    let put_url = get_destination_registry(
-        url.clone(),
-        namespace.clone(),
-        String::from("http_manifest"),
-    );
-
-    let str_digest: String;
-    if tag_digest == "".to_string() {
-        let mut hasher = Sha256::new();
-        hasher.update(serialized_manifest.clone());
-        let hash_bytes = hasher.finalize();
-        str_digest = encode(hash_bytes);
-    } else {
-        str_digest = tag_digest.replace(":", "-");
-    }
-    let res_put = client
-        .put(put_url.clone() + &str_digest.clone())
-        .body(serialized_manifest.clone())
-        .header(
-            "Content-Type",
-            "application/vnd.docker.distribution.manifest.v2+json",
-        )
-        .header("Content-Length", serialized_manifest.len())
-        .send()
-        .await;
-
-    let result = res_put.unwrap();
-    log.trace(&format!(
-        "result for manifest {:#?} {} {}",
-        result.status(),
-        namespace,
-        put_url.clone() + &str_digest
-    ));
-
-    if result.status() != StatusCode::CREATED && result.status() != StatusCode::OK {
-        let err = MirrorError::new(&format!(
-            "upload manifest failed with status {:#?} : {:#?}",
-            result.status(),
-            result.text().await.unwrap().to_string()
+        let updated_url = format!("{}/{}", "docker://localhost:5000/test", "test-namespace");
+        let res = aw!(removable_media_disk_to_mirror(
+            fake.clone(),
+            log,
+            "test-artifacts/missing-files/artifacts".to_string(),
+            updated_url,
+            mp.clone(),
         ));
-        Err(err)
-    } else {
-        Ok(String::from("ok"))
-    }
-}
-
-pub async fn check_manifest(
-    log: &Logging,
-    url: String,
-    namespace: String,
-    tag_digest: String,
-    token: String,
-) -> Result<String, MirrorError> {
-    let client = Client::new();
-    let client = client.clone();
-    let header_bearer = format!("Bearer {}", token);
-
-    let head_url = get_destination_registry(
-        url.clone(),
-        namespace.clone(),
-        String::from("http_manifest"),
-    );
-
-    let res_put = client
-        .head(head_url.clone() + &tag_digest.clone())
-        .header(
-            "Content-Type",
-            "application/vnd.docker.distribution.manifest.v2+json",
-        )
-        .header("Accept", "application/json")
-        .header("Authorization", header_bearer)
-        .send()
-        .await;
-
-    if res_put.is_ok() {
-        let result = res_put.unwrap();
-        log.trace(&format!(
-            "result for manifest {:#?} {} {}",
-            result.status(),
-            namespace,
-            head_url.clone() + &tag_digest
-        ));
-
-        if result.status() != StatusCode::OK {
-            let err = MirrorError::new(&format!(
-                "upload manifest failed with status {}",
-                result.status(),
-            ));
-            Err(err)
-        } else {
-            Ok(String::from("ok"))
-        }
-    } else {
-        let err = MirrorError::new(&format!(
-            "upload manifest failed {}",
-            res_put.err().unwrap().to_string().to_lowercase(),
-        ));
-        Err(err)
+        assert_eq!(res.is_err(), true);
     }
 }

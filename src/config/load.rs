@@ -1,6 +1,6 @@
+use crate::mirror::utils::fs_handler;
 use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
-use std::fs;
 
 /// config schema
 #[derive(Serialize, Deserialize, Debug)]
@@ -70,22 +70,24 @@ pub struct Release {
 }
 
 // read the 'image set config' file
-pub fn load_config(config_file: String) -> Result<String, MirrorError> {
+pub async fn load_config(config_file: String) -> Result<String, MirrorError> {
     // Create a path to the desired file
-    let data = fs::read_to_string(config_file.clone());
-    if data.is_ok() {
-        Ok(data.unwrap())
-    } else {
-        let err = MirrorError::new(&format!("could not read config file {} ", config_file));
-        Err(err)
-    }
+    let data = fs_handler(config_file.clone(), "read", None).await?;
+    Ok(data.clone())
 }
 
 // parse the 'image set config' file
-pub fn parse_yaml_config(data: String) -> Result<ImageSetConfig, serde_yaml::Error> {
+pub fn parse_yaml_config(data: String) -> Result<ImageSetConfig, MirrorError> {
     // Parse the string of data into serde_json::ImageSetConfig.
-    let res = serde_yaml::from_str::<ImageSetConfig>(&data);
-    res
+    let res = serde_yaml::from_str(&data);
+    if res.is_err() {
+        return Err(MirrorError::new(&format!(
+            "[parse_yaml_config] {}",
+            res.err().unwrap().to_string().to_lowercase()
+        )));
+    }
+    let root: ImageSetConfig = res.unwrap();
+    Ok(root)
 }
 
 #[cfg(test)]
@@ -93,24 +95,35 @@ mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
 
-    #[test]
-    fn test_load_config_pass() {
-        let res = load_config(String::from("./imagesetconfig.yaml"));
-        assert!(res.is_ok());
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
     }
 
     #[test]
-    #[should_panic]
-    fn test_load_config_fail() {
-        let res = load_config(String::from("./nada.yaml"));
-        assert!(res.is_err());
+    fn load_config_pass() {
+        let res = aw!(load_config(String::from("examples/imagesetconfig.yaml")));
+        assert_eq!(res.is_ok(), true);
     }
 
-    // finally test that the parser is working correctly
     #[test]
-    fn test_isc_parser() {
-        let data = load_config(String::from("./imagesetconfig.yaml"));
-        let res = parse_yaml_config(data.unwrap().to_string());
-        assert!(res.is_ok());
+    fn load_config_fail() {
+        let res = aw!(load_config(String::from("nada.yaml")));
+        assert_eq!(res.is_err(), true);
+    }
+
+    #[test]
+    fn isc_parser_pass() {
+        let data = aw!(load_config(String::from("examples/imagesetconfig.yaml")));
+        let res = parse_yaml_config(data.unwrap());
+        assert_eq!(res.is_ok(), true);
+    }
+
+    #[test]
+    fn isc_parser_fail() {
+        let data = "{ ".to_string();
+        let res = parse_yaml_config(data);
+        assert_eq!(res.is_err(), true);
     }
 }

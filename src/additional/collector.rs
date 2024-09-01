@@ -10,23 +10,31 @@ use mirror_error::MirrorError;
 use std::collections::HashMap;
 
 // collect all additional images
-pub async fn additional_mirror_to_disk<T: RegistryInterface>(
+pub async fn additional_mirror_to_disk<T: RegistryInterface + Clone>(
     reg_con: T,
     log: &Logging,
     additional: Vec<Image>,
     mp: MirrorParameters,
 ) -> Result<(), MirrorError> {
-    log.hi("additional images collector mode: mirror-to-disk");
+    log.hi("[additional_mirror_to_disk] collector mode: mirror-to-disk");
 
     //let blobs_dir = dir.clone() + "/blobs-store/";
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut vec_fslayers: Vec<FsLayer> = vec![];
     let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
+    let t_impl = ImplTokenInterface {};
     // parse the config
     for image in additional.iter() {
         let ir = parse_image(log, image.name.clone());
         log.debug(&format!("image refs {:#?}", ir));
-        let token = get_token(log, ir.clone().registry).await?;
+        let token = get_token(
+            t_impl.clone(),
+            log,
+            ir.registry.clone(),
+            format!("{}/{}", ir.namespace.clone(), ir.name.clone()),
+            mp.tls_verify,
+        )
+        .await?;
         // set both url and cache params
         let manifest_url = format!(
             "https://{}/v2/{}/{}/manifests/{}",
@@ -48,8 +56,8 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             "list"
         );
         if !(mp.skip_manifest_check == "additional" || mp.skip_manifest_check == "all") {
-            log.mid(&format!(
-                "api call manifest list for {:#}",
+            log.info(&format!(
+                "[additional_mirror_to_disk] api call manifest list for {:#}",
                 ir.registry.clone() + &"/" + &ir.namespace.clone() + "/" + &ir.name.clone()
             ));
             let res = reg_con
@@ -80,8 +88,8 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             if !(mp.skip_manifest_check == "additional" || mp.skip_manifest_check == "all")
                 && !mp.dry_run
             {
-                log.mid(&format!(
-                    "api call for arch manifest {:#}",
+                log.info(&format!(
+                    "[additional_mirror_to_disk] api call for arch manifest {:#}",
                     ir_url.registry.clone()
                         + &"/"
                         + &ir_url.namespace.clone()
@@ -129,7 +137,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
                 arch.clone(),
             );
             log.debug(&format!(
-                "reading arch manifest json from {}",
+                "[additional_mirror_to_disk] reading arch manifest json from {}",
                 arch_manifest_json
             ));
             let arch_manifest = read_and_parse_oci_manifest(arch_manifest_json.clone())?;
@@ -180,7 +188,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
     .await?;
     // if dry run set don't execute blob concurrency section
     if mp.dry_run {
-        log.ex("dry-run flag detected");
+        log.ex("[additional_mirror_to_disk] dry-run flag detected");
         let mut buf = String::from("");
         let mut file = String::from("/mirror-metadata/additional-image-reference.json");
         // used to override the reference file
@@ -188,7 +196,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
         if mdir_file.is_some() {
             file = mdir_file.unwrap().to_string();
             log.debug(&format!(
-                "using file override {}{}",
+                "[additional_mirror_to_disk] using file override {}{}",
                 mp.dir.clone(),
                 file.clone()
             ));
@@ -207,13 +215,21 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface>(
             Some(buf),
         )
         .await?;
-        log.mid(&format!(
-            "created additional images mapping file in folder {}",
+        log.ex(&format!(
+            "[additional_mirror_to_disk] created additional images mapping file in folder {}",
             mp.dir.clone() + &"/mappings/",
         ));
     } else {
         let map = remove_duplicates(mp.dir.clone(), fslayers);
-        let res = execute_batch(log, mp.dir.clone(), mp.verify_blobs, mp.tls_verify, map).await;
+        let res = execute_batch(
+            reg_con,
+            log,
+            format!("{}/{}", mp.dir.clone(), "blobs-store"),
+            mp.verify_blobs,
+            mp.tls_verify,
+            map,
+        )
+        .await;
         if res.is_err() {
             return Err(res.err().unwrap());
         }
@@ -230,8 +246,15 @@ mod tests {
 
     #[test]
     fn additional_mirror_to_disk_pass() {
+        fs::create_dir_all("test-artifacts/mirror-metadata")
+            .expect("should create mirror-metadata test folder");
+        fs::create_dir_all("test-artifacts/mappings").expect("should create mappings test folder");
+        fs::create_dir_all("test-artifacts/blobs-store")
+            .expect("should create blobs-store test folder");
+        fs::create_dir_all("test-artifacts/manifests").expect("should create manifest test folder");
+
         let log = &Logging {
-            log_level: Level::TRACE,
+            log_level: Level::INFO,
         };
 
         macro_rules! aw {
@@ -334,6 +357,19 @@ mod tests {
                 Ok(content.to_string())
             }
 
+            async fn get_blob(
+                &self,
+                log: &Logging,
+                _dir: String,
+                _url: String,
+                _token: String,
+                _verify_blob: bool,
+                _blob_sum: String,
+            ) -> Result<(), MirrorError> {
+                log.info("[get_blob] fake call");
+                Ok(())
+            }
+
             async fn get_blobs(
                 &self,
                 _log: &Logging,
@@ -367,15 +403,6 @@ mod tests {
             ),
         };
 
-        fs::create_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should create mirror-metadata test folder");
-        fs::create_dir_all("./test-artifacts/mappings")
-            .expect("should create mappings test folder");
-
-        // skip manifest check none
-        // dry-run false
-        // verify-blobs false
-        // tls_verify false
         let mp = MirrorParameters {
             architectures: vec![
                 "amd64".to_string(),
@@ -385,7 +412,7 @@ mod tests {
             ],
             destination: "".to_string(),
             dry_run: false,
-            dir: "./test-artifacts".to_string(),
+            dir: "test-artifacts".to_string(),
             from: "".to_string(),
             skip_blob_upload: false,
             skip_manifest_check: "none".to_string(),
@@ -404,8 +431,6 @@ mod tests {
         ));
         assert_eq!(res.is_ok(), true);
 
-        // dry run true
-        // skip_manifest_check all
         let mp_dr = MirrorParameters {
             architectures: vec![
                 "amd64".to_string(),
@@ -415,7 +440,7 @@ mod tests {
             ],
             destination: "".to_string(),
             dry_run: true,
-            dir: "./test-artifacts".to_string(),
+            dir: "test-artifacts".to_string(),
             from: "".to_string(),
             skip_blob_upload: false,
             skip_manifest_check: "all".to_string(),
@@ -433,9 +458,6 @@ mod tests {
         ));
         assert_eq!(res_dr.is_ok(), true);
 
-        // dry run true
-        // skip_manifest_check all
-        // set file override
         let mut f_override: HashMap<String, String> = HashMap::new();
         f_override.insert("additional-image-reference".to_string(), "nada".to_string());
         let mp_dr = MirrorParameters {
@@ -447,7 +469,7 @@ mod tests {
             ],
             destination: "".to_string(),
             dry_run: true,
-            dir: "./test-artifacts".to_string(),
+            dir: "test-artifacts".to_string(),
             from: "".to_string(),
             skip_blob_upload: false,
             skip_manifest_check: "all".to_string(),
@@ -470,9 +492,6 @@ mod tests {
         }
         assert_eq!(res_k.is_err(), true);
 
-        // dry run true
-        // skip_manifest_check all
-        // set file override
         let mut f_override: HashMap<String, String> = HashMap::new();
         f_override.insert(
             "additional-image-reference".to_string(),
@@ -532,7 +551,7 @@ mod tests {
         };
 
         // remove manifests directory
-        fs::remove_dir_all("./test-artifacts/manifests").expect("should delete test directory");
+        fs::remove_dir_all("test-artifacts/manifests").expect("should delete test directory");
         let res_x = aw!(additional_mirror_to_disk(
             fake.clone(),
             log,
@@ -559,7 +578,7 @@ mod tests {
             architectures: vec![],
             destination: "".to_string(),
             dry_run: false,
-            dir: "./test-artifacts".to_string(),
+            dir: "test-artifacts".to_string(),
             from: "".to_string(),
             skip_blob_upload: false,
             skip_manifest_check: "none".to_string(),
@@ -569,10 +588,6 @@ mod tests {
             rebuild_catalogs: Some(false),
         };
 
-        // skip manifest check none
-        // dry-run false
-        // verify-blobs false
-        // tls_verify false
         let images = vec![img.clone()];
         let res = aw!(additional_mirror_to_disk(
             fake.clone(),
@@ -600,7 +615,7 @@ mod tests {
             architectures: vec![],
             destination: "".to_string(),
             dry_run: false,
-            dir: "./test-artifacts".to_string(),
+            dir: "test-artifacts".to_string(),
             from: "".to_string(),
             skip_blob_upload: false,
             skip_manifest_check: "none".to_string(),
@@ -610,10 +625,6 @@ mod tests {
             rebuild_catalogs: Some(false),
         };
 
-        // skip manifest check none
-        // dry-run false
-        // verify-blobs false
-        // tls_verify false
         let images = vec![img.clone()];
         let res = aw!(additional_mirror_to_disk(
             fake.clone(),
@@ -629,10 +640,9 @@ mod tests {
         }
         assert_eq!(res.is_err(), true);
 
-        fs::remove_dir_all("./test-artifacts/manifests").expect("should delete test directory");
-        fs::remove_dir_all("./test-artifacts/mappings").expect("should delete test directory");
-        fs::remove_dir_all("./test-artifacts/blobs-store").expect("should delete test directory");
-        fs::remove_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should delete test directory");
+        fs::remove_dir_all("test-artifacts/manifests").expect("should delete test directory");
+        fs::remove_dir_all("test-artifacts/mappings").expect("should delete test directory");
+        fs::remove_dir_all("test-artifacts/blobs-store").expect("should delete test directory");
+        fs::remove_dir_all("test-artifacts/mirror-metadata").expect("should delete test directory");
     }
 }

@@ -1,0 +1,14 @@
+[
+  {
+    "indexReference": "redhat-operator-index/v4.12",
+    "name": "aws-load-balancer-rhel8-operator-b13db5fb28d1282bc53f73baeae75ab54854b41b0091be32431af35fb51950a0-annotation",
+    "namespace": "albo/aws-load-balancer-rhel8-operator",
+    "digest": "sha256:40f10546ab23de3126c805edcc492ecb929dfde7cf7b1e147541e54d65e1056b",
+    "tag": null,
+    "arch": "amd64",
+    "manifestType": "manifest",
+    "creationTimestamp": "",
+    "mirrorType": "operator",
+    "bundle": "aws-load-balancer-operator.v1.1.0"
+  }
+]

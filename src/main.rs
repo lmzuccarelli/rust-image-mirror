@@ -1,6 +1,7 @@
 // use modules
 use crate::additional::collector::*;
 use crate::clusterresources::generate::*;
+use crate::mirror::upload::*;
 use crate::mirror::utils::fs_handler;
 use crate::operator::collector::*;
 use crate::release::collector::*;
@@ -36,7 +37,6 @@ use removable_media::collector::*;
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
-    let cfg = args.config.as_ref().unwrap().to_string();
     let level = args.loglevel.unwrap().to_string();
     let arch = args.architecture.to_string();
 
@@ -58,37 +58,6 @@ async fn main() {
         log.error("destination is mandatory use docker:// or file:// prefix");
         std::process::exit(exitcode::USAGE);
     }
-
-    log.debug(&format!("image-mirror config file {} ", cfg));
-
-    // Parse the config serde_yaml::ImageSetConfiguration.
-    let config = load_config(cfg);
-    if config.is_err() {
-        log.error(&format!("{:#}", config.err().unwrap().to_string()));
-        process::exit(1);
-    }
-    let isc_config = parse_yaml_config(config.unwrap());
-    if isc_config.is_err() {
-        log.error(&format!("{:#}", isc_config.err().unwrap().to_string()));
-        process::exit(1);
-    }
-
-    let isc_config_final = isc_config.unwrap();
-
-    log.debug(&format!(
-        "image set config releases {:#?}",
-        isc_config_final.mirror.release
-    ));
-
-    log.debug(&format!(
-        "image set config operators {:#?}",
-        isc_config_final.mirror.operators
-    ));
-
-    log.debug(&format!(
-        "image set config additional images {:#?}",
-        isc_config_final.mirror.additional_images
-    ));
 
     // multi archj support
     let mut vec_arch: Vec<String> = Vec::new();
@@ -122,6 +91,45 @@ async fn main() {
 
     // this is mirrorToDisk
     if mp.destination.contains("file://") {
+        if args.config.is_none() {
+            log.error("the --config flag and value is mandatory");
+            process::exit(1);
+        }
+
+        log.debug(&format!(
+            "image-mirror config file {} ",
+            args.config.as_ref().unwrap()
+        ));
+
+        // Parse the config serde_yaml::ImageSetConfiguration.
+        let config = load_config(args.config.as_ref().unwrap().to_string()).await;
+        if config.is_err() {
+            log.error(&format!("{:#}", config.err().unwrap().to_string()));
+            process::exit(1);
+        }
+        let isc_config = parse_yaml_config(config.unwrap());
+        if isc_config.is_err() {
+            log.error(&format!("{:#}", isc_config.err().unwrap().to_string()));
+            process::exit(1);
+        }
+
+        let isc_config_final = isc_config.unwrap();
+
+        log.debug(&format!(
+            "image set config releases {:#?}",
+            isc_config_final.mirror.release
+        ));
+
+        log.debug(&format!(
+            "image set config operators {:#?}",
+            isc_config_final.mirror.operators
+        ));
+
+        log.debug(&format!(
+            "image set config additional images {:#?}",
+            isc_config_final.mirror.additional_images
+        ));
+
         let destination = mp.destination.split("file://").nth(1).unwrap();
         let res_mm = fs_handler(
             format!("{}/{}", destination, "mirror-metadata".to_string()),
@@ -132,9 +140,17 @@ async fn main() {
         if res_mm.is_err() {
             log.error(&format!("{}", res_mm.err().unwrap().to_string()));
         }
-
         let res_mp = fs_handler(
             format!("{}/{}", destination, "mappings".to_string()),
+            "create_dir",
+            None,
+        )
+        .await;
+        if res_mp.is_err() {
+            log.error(&format!("{}", res_mp.err().unwrap().to_string()));
+        };
+        let res_mp = fs_handler(
+            format!("{}/{}", destination, "artifacts".to_string()),
             "create_dir",
             None,
         )
@@ -155,7 +171,10 @@ async fn main() {
             )
             .await;
             if res.is_err() {
-                log.error(&format!("{}", res.err().unwrap()));
+                log.error(&format!(
+                    "result from release collector {}",
+                    res.err().unwrap()
+                ));
                 process::exit(1);
             }
         }
@@ -170,7 +189,11 @@ async fn main() {
             .await;
 
             if res.is_err() {
-                log.error(&format!("shama groon {}", res.err().unwrap()));
+                log.error(&format!(
+                    "result from operator collector {}",
+                    res.err().unwrap()
+                ));
+                process::exit(1);
             }
         }
         // check for additional images
@@ -183,7 +206,10 @@ async fn main() {
             )
             .await;
             if res.is_err() {
-                log.error(&format!("{}", res.err().unwrap()));
+                log.error(&format!(
+                    "result from additional images collector {}",
+                    res.err().unwrap()
+                ));
             }
         }
 
@@ -219,27 +245,28 @@ async fn main() {
                 process::exit(exitcode::USAGE);
             }
         }
+        let g_impl = ImplProcessImageInterface {};
         let from = args.from.split("file://").nth(1).unwrap().to_string();
-        let res = removable_media_disk_to_mirror(
+        let res_rm = removable_media_disk_to_mirror(
+            g_impl.clone(),
             log,
             from.clone(),
             destination_registry.clone(),
-            args.skip_blob_upload,
-            true,
+            mp.clone(),
         )
         .await;
-        if res.is_err() {
-            log.error(&format!("{}", res.err().unwrap()));
+        if res_rm.is_err() {
+            log.error(&format!("{}", res_rm.err().unwrap()));
             process::exit(1);
         }
 
         // generate idms, itms and catalog source
         let gcr = GenerateClusterResources::new(from.clone());
-        let res = gcr.untar_metadata(log).await;
-        if res.is_err() {
+        let res_un = gcr.untar_metadata(log).await;
+        if res_un.is_err() {
             log.error(&format!(
                 "untarring archive (metadata) {:#}",
-                res.err().unwrap()
+                res_un.err().unwrap()
             ));
         }
 
@@ -256,10 +283,9 @@ async fn main() {
         if gen_res.is_err() {
             log.error(&format!("{}", gen_res.err().unwrap().to_string()));
         }
-
-        let res = gcr.clean_up();
-        if res.is_err() {
-            log.error(&format!("{}", res.err().unwrap().to_string()));
+        let res_c = gcr.clean_up(mp.dir.clone()).await;
+        if res_c.is_err() {
+            log.error(&format!("{}", res_c.err().unwrap().to_string()));
         }
     }
 }
