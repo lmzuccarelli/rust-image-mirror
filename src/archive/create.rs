@@ -1,11 +1,9 @@
 use crate::mirror::utils::keepalive;
 use crate::mirror::utils::*;
 use custom_logger::*;
-use mirror_copy::parse_json_manifest_operator;
 use mirror_error::MirrorError;
 use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
-use std::fs::{self};
 use std::path::Path;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
@@ -52,165 +50,98 @@ pub async fn create_tar(
 
     for file in metadata_files.iter() {
         // read the mirror-metadata files
-        log.mid(&format!("reading metadata file {:?}", file));
+        log.info(&format!("[create_tar] reading metadata file {:?}", file));
         let file_path = format!("{}/{}/{}", base_dir, "mirror-metadata", file);
-        let data = fs::read_to_string(file_path);
-        if data.is_ok() {
-            let op_imgrefs = parse_json_metadata(data.unwrap());
-            if op_imgrefs.is_ok() {
-                for img in op_imgrefs.unwrap().iter() {
-                    if img.manifest_type == "manifest" && vec_arch.contains(&img.arch.to_string()) {
-                        let td: String;
-                        if img.tag.is_some() && img.digest.len() == 0 {
-                            td = format!("{}:{}", img.name.clone(), img.tag.as_ref().unwrap());
-                        } else {
-                            td = img.digest.clone();
-                        }
-                        let manifest_file = format!(
-                            "{}/manifests/{}/{}-{}.json",
-                            base_dir.clone(),
-                            img.mirror_type,
-                            td,
-                            img.arch
-                        );
-                        log.trace(&format!("manifest_file {}", manifest_file));
-                        log.info(&format!("copying blobs for image {:#?}", img.name));
-                        let m_data = fs::read_to_string(manifest_file.clone());
-                        if m_data.is_ok() {
-                            let mnfst = parse_json_manifest_operator(m_data.unwrap());
-                            if mnfst.is_ok() {
-                                // component manifest
-                                let to = format!("tmp-blobs-dir/{}/blob", img.namespace.clone());
-                                fs_handler(to.clone(), "create_dir", None).await?;
-                                let manifest = mnfst.unwrap();
-                                for layer in manifest.clone().layers.unwrap().iter() {
-                                    let digest = layer.digest.split(":").nth(1).unwrap();
-                                    let from = base_dir.clone()
-                                        + "/blobs-store/"
-                                        + &digest[..2]
-                                        + &String::from("/")
-                                        + digest;
-                                    let to_file = format!("{}/{}", to.clone(), digest);
-                                    log.debug(&format!(
-                                        "copy from {:#?} to {:#?}",
-                                        from,
-                                        to_file.clone()
-                                    ));
-                                    if !Path::new(&to_file).exists() {
-                                        let res = fs::copy(from.clone(), to_file.clone());
-                                        if res.is_err() {
-                                            let msg = &format!(
-                                                "{} {}",
-                                                "[create_tar] copying layer blob file",
-                                                res.err().unwrap().to_string().to_lowercase()
-                                            );
-                                            let err = MirrorError::new(msg);
-                                            return Err(err);
-                                        }
-                                        blob_count += 1;
-                                        current_size = current_size + layer.size;
-                                    }
-                                }
-                                // add config
-                                let cfg_digest_sha = manifest.clone().config.unwrap().digest;
-                                let cfg_digest = cfg_digest_sha.split(":").nth(1).unwrap();
-                                log.debug(&format!("config digest {:#?}", cfg_digest));
-                                let from = base_dir.clone()
-                                    + "/blobs-store/"
-                                    + &cfg_digest[..2]
-                                    + &String::from("/")
-                                    + &cfg_digest;
-                                let to_file = format!("{}/{}", to.clone(), cfg_digest);
-                                log.debug(&format!(
-                                    "copy from {:#?} to {:#?}",
-                                    from,
-                                    to_file.clone()
-                                ));
-                                if !Path::new(&to_file).exists() {
-                                    let res = fs::copy(from.clone(), to_file.clone());
-                                    if res.is_err() {
-                                        let msg = &format!(
-                                            "{} {}",
-                                            "[create_tar] copying config blob file",
-                                            res.err().unwrap().to_string().to_lowercase()
-                                        );
-                                        let err = MirrorError::new(msg);
-                                        return Err(err);
-                                    }
-                                    blob_count += 1;
-                                    current_size =
-                                        current_size + manifest.clone().config.unwrap().size;
-                                }
-
-                                if current_size >= archive_size {
-                                    total_size = total_size + current_size;
-                                    create_new_blobs_tar(base_dir.clone(), sequence).await?;
-                                    sequence += 1;
-                                    current_size = 0;
-                                }
-
-                                // finally add manifest to temp dir
-                                let to = format!("{}/{}/digest/", img.mirror_type, img.namespace);
-                                let to_dir = format!("tmp-manifest-dir/{}", to.clone());
-                                fs_handler(to_dir.clone(), "create_dir", None).await?;
-                                let to_file: String;
-                                if img.tag.is_some() {
-                                    to_file =
-                                        format!("{}-{}.json", img.tag.as_ref().unwrap(), img.arch);
-                                } else {
-                                    to_file = format!("{}-{}.json", img.digest, img.arch);
-                                }
-                                let res = fs::copy(
-                                    manifest_file.clone(),
-                                    format!("{}/{}", to_dir, to_file),
-                                );
-                                if res.is_err() {
-                                    let msg = &format!(
-                                        "{} {}",
-                                        "[create-tar] copying manifest file",
-                                        res.err().unwrap().to_string().to_lowercase()
-                                    );
-                                    let err = MirrorError::new(msg);
-                                    return Err(err);
-                                }
-                                manifest_count += 1;
-                            } else {
-                                let err = MirrorError::new(&format!(
-                                    "[create_tar] parsing manifest {}",
-                                    mnfst.err().unwrap().to_string().to_lowercase()
-                                ));
-                                return Err(err);
-                            }
-                        } else {
-                            let err = MirrorError::new(&format!(
-                                "[create_tar] reading manifest {}",
-                                m_data.err().unwrap().to_string().to_lowercase()
-                            ));
-                            return Err(err);
+        if Path::new(&file_path).exists() {
+            let metadata = read_and_parse_metadata(file_path)?;
+            for img in metadata.clone().iter() {
+                if img.manifest_type == "manifest" && vec_arch.contains(&img.arch.to_string()) {
+                    let td: String;
+                    if img.tag.is_some() && img.digest.len() == 0 {
+                        td = format!("{}:{}", img.name.clone(), img.tag.as_ref().unwrap());
+                    } else {
+                        td = img.digest.clone();
+                    }
+                    let manifest_file = format!(
+                        "{}/manifests/{}/{}-{}.json",
+                        base_dir.clone(),
+                        img.mirror_type,
+                        td,
+                        img.arch
+                    );
+                    log.trace(&format!("[create_tar] manifest_file {}", manifest_file));
+                    log.debug(&format!(
+                        "[create_tar] copying blobs for image {:#?}",
+                        img.name
+                    ));
+                    let m_data = read_and_parse_oci_manifest(manifest_file.clone())?;
+                    let to = format!("tmp-blobs-dir/{}/blob", img.namespace.clone());
+                    fs_handler(to.clone(), "create_dir", None).await?;
+                    let manifest = m_data.clone();
+                    for layer in manifest.clone().layers.unwrap().iter() {
+                        let digest = layer.digest.split(":").nth(1).unwrap();
+                        let from = base_dir.clone()
+                            + "/blobs-store/"
+                            + &digest[..2]
+                            + &String::from("/")
+                            + digest;
+                        let to_file = format!("{}/{}", to.clone(), digest);
+                        log.trace(&format!(
+                            "[create_tar] copy from {:#?} to {:#?}",
+                            from,
+                            to_file.clone()
+                        ));
+                        if !Path::new(&to_file).exists() {
+                            fs_copy(from.clone(), to_file.clone()).await?;
+                            blob_count += 1;
+                            current_size = current_size + layer.size;
                         }
                     }
+                    let cfg_digest_sha = manifest.clone().config.unwrap().digest;
+                    let cfg_digest = cfg_digest_sha.split(":").nth(1).unwrap();
+                    log.debug(&format!("[create_tar] config digest {:#?}", cfg_digest));
+                    let from = base_dir.clone()
+                        + "/blobs-store/"
+                        + &cfg_digest[..2]
+                        + &String::from("/")
+                        + &cfg_digest;
+                    let to_file = format!("{}/{}", to.clone(), cfg_digest);
+                    log.trace(&format!(
+                        "[create_tar] copy from {:#?} to {:#?}",
+                        from,
+                        to_file.clone()
+                    ));
+                    if !Path::new(&to_file).exists() {
+                        fs_copy(from.clone(), to_file.clone()).await?;
+                        blob_count += 1;
+                        current_size = current_size + manifest.clone().config.unwrap().size;
+                    }
+                    if current_size >= archive_size {
+                        total_size = total_size + current_size;
+                        create_new_blobs_tar(base_dir.clone(), sequence).await?;
+                        sequence += 1;
+                        current_size = 0;
+                    }
+                    let to = format!("{}/{}/digest/", img.mirror_type, img.namespace);
+                    let to_dir = format!("tmp-manifest-dir/{}", to.clone());
+                    fs_handler(to_dir.clone(), "create_dir", None).await?;
+                    let to_file: String;
+                    if img.tag.is_some() {
+                        to_file = format!("{}-{}.json", img.tag.as_ref().unwrap(), img.arch);
+                    } else {
+                        to_file = format!("{}-{}.json", img.digest, img.arch);
+                    }
+                    fs_copy(manifest_file.clone(), format!("{}/{}", to_dir, to_file)).await?;
+                    manifest_count += 1;
                 }
-            } else {
-                let err = MirrorError::new(&format!(
-                    "[create_tar] parsing metadata {}",
-                    op_imgrefs.err().unwrap().to_string().to_lowercase()
-                ));
-                return Err(err);
             }
         } else {
-            let err = MirrorError::new(&format!(
-                "[create_tar] reading data {}",
-                data.err().unwrap().to_string().to_lowercase()
-            ));
-            return Err(err);
+            log.warn(&format!("[create_tar] no refences for {}", file));
         }
     }
-
     log.ex(&format!("total manifest count      : {}", manifest_count));
     log.ex(&format!("total blob count          : {}", blob_count));
-
-    log.ex("  building blob archive/s ");
-    // start our spinner
+    log.ex("  [create_tar] building blob archive/s ");
     let (keepalive_send, keepalive_recv) = keepalive::channel();
     let join_handle = spawn(move || {
         let counter = 0;
@@ -223,35 +154,27 @@ pub async fn create_tar(
         }
         counter
     });
-    // create the blob tar/s
     create_new_blobs_tar(base_dir.clone(), sequence).await?;
     drop(keepalive_send);
     let _ = join_handle.join().unwrap();
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-
     let tar_manifest =
         File::create(base_dir.clone() + &"/artifacts/mirror-manifests.tar".to_string()).unwrap();
     let mut tar_m = tar::Builder::new(tar_manifest);
-
     let manifest_size = fs_extra::dir::get_size("tmp-manifest-dir").unwrap();
-
-    log.ex("  building manifest archive ");
+    log.ex("  [create_tar] building manifest archive ");
     tar_m.append_dir_all(".", "tmp-manifest-dir").unwrap();
     tar_m.finish().expect("should flush manifest contents");
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-
     let tar_meta =
         File::create(base_dir.clone() + &"/artifacts/mirror-metadata.tar".to_string()).unwrap();
     let mut tar_md = tar::Builder::new(tar_meta);
-
     let src_dir = format!("{}/{}", base_dir.clone(), "mirror-metadata");
     let metadata_size = fs_extra::dir::get_size(src_dir.clone()).unwrap();
-
-    log.ex("  building metadata archive ");
+    log.ex("  [create_tar] building metadata archive ");
     tar_md.append_dir_all(".", src_dir.clone()).unwrap();
     tar_m.finish().expect("should flush metadata contents");
     println!("\x1b[1A \x1b[38C{}", "\x1b[1;92m✓\x1b[0m");
-
     let ms = MirrorStats {
         blob_count,
         blob_size: total_size as u64,
@@ -260,17 +183,13 @@ pub async fn create_tar(
         metadata_count: 3,
         metadata_size,
     };
-
     let serialized_data = serde_json::to_string(&ms).unwrap();
     let ms_file = format!("{}/{}", base_dir.clone(), "/artifacts/mirror-stats.json");
-
     fs_handler(ms_file, "write", Some(serialized_data)).await?;
     fs_handler("tmp-manifest-dir".to_string(), "remove_dir", None).await?;
     fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None).await?;
-
     Ok(true)
 }
-
 async fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorError> {
     let tar_sequence = format!(
         "{}/{}-{:0>4}.tar",
@@ -278,103 +197,49 @@ async fn create_new_blobs_tar(dir: String, sequence: i64) -> Result<(), MirrorEr
         "artifacts/mirror-blobs",
         sequence
     );
-    let tar_blobs = File::create(&tar_sequence);
-    if tar_blobs.is_err() {
-        let err = MirrorError::new(&format!(
-            "[create_new_blobs_tar]  {}",
-            tar_blobs.err().unwrap().to_string()
-        ));
-        return Err(err);
-    }
-    let mut tar_b = tar::Builder::new(tar_blobs.unwrap());
+    let tar_blobs = fs_open_or_create(tar_sequence, true).await?;
+    let mut tar_b = tar::Builder::new(tar_blobs);
     // add all the contents to the blobs
-    let res = tar_b.append_dir_all(".", "tmp-blobs-dir");
-    if res.is_err() {
-        let err = MirrorError::new(&format!(
-            "[create_new_blobs_tar]  {}",
-            res.err().unwrap().to_string()
-        ));
-        return Err(err);
-    }
+    tar_b.append_dir_all(".", "tmp-blobs-dir").unwrap();
     tar_b.finish().expect("should flush blob contents");
     // cleanup
     fs_handler("tmp-blobs-dir".to_string(), "remove_dir", None).await?;
     fs_handler("tmp-blobs-dir".to_string(), "create_dir", None).await?;
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
-
-    // this brings everything from parent's scope into this scope
-    //use super::*;
-
-    /*
+    use super::*;
     #[test]
-    fn get_metadata_dirs_incremental_pass() {
+    fn create_tar_pass() {
         let log = &Logging {
             log_level: Level::INFO,
         };
-        let mut hs = HashSet::new();
-        hs.insert(String::from(
-            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1",
+
+        macro_rules! aw {
+            ($e:expr) => {
+                tokio_test::block_on($e)
+            };
+        }
+        let vec_arch = vec![
+            "amd64".to_string(),
+            "arm64".to_string(),
+            "ppc64le".to_string(),
+            "390x".to_string(),
+        ];
+        let res = aw!(create_tar(
+            log,
+            "test-artifacts/do-not-delete".to_string(),
+            1,
+            vec_arch.clone()
         ));
-        let res = get_metadata_dirs_incremental(
+        assert_eq!(res.is_ok(), true);
+        let res = aw!(create_tar(
             log,
-            String::from("test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1"),
-        );
-        assert_eq!(res, hs);
-    }
-
-    #[test]
-    fn get_metadata_dirs_by_date_pass() {
-        let log = &Logging {
-            log_level: Level::INFO,
-        };
-        let mut hs = HashSet::new();
-        hs.insert(String::from(
-            "test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1",
+            "test-artifacts/missing-files".to_string(),
+            1,
+            vec_arch.clone()
         ));
-        let res = get_metadata_dirs_by_date(
-            log,
-            String::from("test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1"),
-            String::from("2023/08/01"),
-        );
-        assert_eq!(res, hs);
+        assert_eq!(res.is_ok(), true);
     }
-
-    #[test]
-    #[should_panic]
-    fn get_metadata_dirs_by_date_fail() {
-        let log = &Logging {
-            log_level: Level::INFO,
-        };
-        let mut hs = HashSet::new();
-        hs.insert(String::from("test-artifacts/operators"));
-        let res =
-            get_metadata_dirs_by_date(log, String::from("test-artifacts"), String::from("/08/01"));
-        assert_eq!(res, hs);
-    }
-
-    #[test]
-    fn create_diff_tar_pass() {
-        let log = &Logging {
-            log_level: Level::INFO,
-        };
-        let mnfst_dir =
-            &"test-artifacts/test-index-operator/v1.0/operators/albo/aws-load-balancer-controller-rhel8/stable-v1/".to_string();
-        let files = vec![mnfst_dir];
-        let res = create_diff_tar(
-            log,
-            String::from("test-diff.tar.gz"),
-            String::from("test-artifacts/blobs-store/"),
-            files.clone(),
-            String::from("imagesetconfig"),
-        );
-        let exists = fs::metadata("test-diff.tar.gz").is_ok();
-        assert_eq!(exists, true);
-        fs::remove_file("test-diff.tar.gz").expect("should delete file");
-        log.info(&format!("return value {:#?}", res));
-    }
-    */
 }

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// config file to use
-    #[arg(short, long, value_name = "config", default_value = "none")]
+    #[arg(short, long, value_name = "config")]
     pub config: Option<String>,
 
     /// set the loglevel. Valid arguments are info, debug, trace
@@ -66,7 +66,7 @@ pub struct Cli {
     pub tls_verify: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MirrorParameters {
     pub architectures: Vec<String>,
     pub destination: String,

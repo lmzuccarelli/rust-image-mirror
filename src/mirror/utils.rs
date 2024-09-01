@@ -6,6 +6,7 @@ use mirror_error::MirrorError;
 use sha256::digest;
 use std::collections::HashMap;
 use std::fs;
+use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -98,72 +99,60 @@ pub async fn process_fb_image(
     mirror_type: String,
 ) -> Result<MirrorImageInfo, MirrorError> {
     let index_json = format!("{}/manifest.json", &oci);
-    let res_data = fs::read_to_string(index_json);
-    if res_data.is_ok() {
-        let m = parse_json_manifest_operator(res_data.as_ref().unwrap().to_string());
-        if m.is_ok() {
-            let mnfst = m.unwrap();
-            for mn in mnfst.layers.unwrap().iter() {
-                let digest = mn.digest.replace(":", "/");
-                let blob = digest.split("sha256/").nth(1).unwrap();
-                let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
-                fs_handler(to_path.clone(), "create_dir", None).await?;
-                fs::copy(
-                    format!("{}/{}", &oci, blob),
-                    format!("{}/{}", to_path, blob),
-                )
-                .expect("should copy blob");
-            }
-            // copy the config
-            let cfg = mnfst.config;
-            let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
-            let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
-            let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
-            fs_handler(to_path.clone(), "create_dir", None).await?;
-            fs::copy(format!("{}/{}", &oci, blob), to).expect("should copy fb config blob");
-            // finally write the manifest
-            let manifest_file = format!(
-                "{}/manifests/{}/{}:{}-amd64.json",
-                dir.clone(),
-                &mirror_type,
-                oci,
-                tag_digest
-            );
-            fs_handler(manifest_file, "write", Some(res_data.unwrap())).await?;
-
-            let mut mii = MirrorImageInfo {
-                // TODO:should fix this to parse image
-                reference: oci.to_string(),
-                name: oci.to_string(),
-                arch: "amd64".to_string(),
-                namespace: reference + &"/" + &oci,
-                digest: "".to_string(),
-                manifest_type: "manifest".to_string(),
-                tag: Some(tag_digest.clone()),
-                created: "".to_string(),
-                mirror_type: mirror_type.to_string(),
-                bundle: None,
-            };
-
-            if tag_digest.contains("sha256:") {
-                mii.digest = blob.to_string();
-                mii.tag = None;
-            }
-            Ok(mii)
-        } else {
-            let err = MirrorError::new(&format!(
-                "parsing fb manifest {}",
-                m.err().unwrap().to_string().to_lowercase()
-            ));
-            return Err(err);
-        }
-    } else {
-        let err = MirrorError::new(&format!(
-            "reading fb manifest {}",
-            res_data.err().unwrap().to_string().to_lowercase()
-        ));
-        return Err(err);
+    let mnfst = read_and_parse_oci_manifest(index_json.clone())?;
+    for mn in mnfst.layers.unwrap().iter() {
+        let digest = mn.digest.replace(":", "/");
+        let blob = digest.split("sha256/").nth(1).unwrap();
+        let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
+        fs_handler(to_path.clone(), "create_dir", None).await?;
+        fs_copy(
+            format!("{}/{}", &oci, blob),
+            format!("{}/{}", to_path, blob),
+        )
+        .await?
     }
+    // copy the config
+    let cfg = mnfst.config;
+    let blob = cfg.as_ref().unwrap().digest.split(":").nth(1).unwrap();
+    let to = format!("{}/blobs-store/{}/{}", dir.clone(), &blob[0..2], blob);
+    let to_path = format!("{}/blobs-store/{}", dir.clone(), &blob[0..2]);
+    fs_handler(to_path.clone(), "create_dir", None).await?;
+    fs_copy(format!("{}/{}", &oci, blob), to).await?;
+    // finally write the manifest
+    let manifest_file = format!(
+        "{}/manifests/{}/{}:{}-amd64.json",
+        dir.clone(),
+        &mirror_type,
+        oci,
+        tag_digest
+    );
+    let data = fs_handler(index_json, "read", None).await?;
+    // before writing do some sneaky updates
+    let updated_data = data.replace(
+        "application/vnd.docker.image.rootfs.diff.tar",
+        "application/vnd.docker.image.rootfs.diff.tar.gzip",
+    );
+    fs_handler(manifest_file, "write", Some(updated_data)).await?;
+
+    let mut mii = MirrorImageInfo {
+        // TODO:should fix this to parse image
+        reference: oci.to_string(),
+        name: oci.to_string(),
+        arch: "amd64".to_string(),
+        namespace: reference + &"/" + &oci,
+        digest: "".to_string(),
+        manifest_type: "manifest".to_string(),
+        tag: Some(tag_digest.clone()),
+        created: "".to_string(),
+        mirror_type: mirror_type.to_string(),
+        bundle: None,
+    };
+
+    if tag_digest.contains("sha256:") {
+        mii.digest = blob.to_string();
+        mii.tag = None;
+    }
+    Ok(mii)
 }
 
 pub fn remove_duplicates(
@@ -204,18 +193,33 @@ pub fn remove_duplicates(
     map
 }
 
-// parse the manifest json
-pub fn parse_json_metadata(data: String) -> Result<Vec<MirrorImageInfo>, MirrorError> {
-    // Parse the string of data into serde_json::Manifest.
-    let res = serde_json::from_str(&data);
+pub async fn fs_open_or_create(name: String, create: bool) -> Result<File, MirrorError> {
+    let res: Result<std::fs::File, std::io::Error>;
+    if create {
+        res = std::fs::File::create(&name);
+    } else {
+        res = std::fs::File::open(&name);
+    }
     if res.is_err() {
         return Err(MirrorError::new(&format!(
-            "[parse_json_metadata] {}",
-            res.err().unwrap().to_string().to_lowercase()
+            "[fs_open] {}",
+            res.as_ref().err().unwrap().to_string().to_lowercase(),
         )));
     }
-    let root: Vec<MirrorImageInfo> = res.unwrap();
-    Ok(root)
+    Ok(res.unwrap())
+}
+
+pub async fn fs_copy(from: String, to: String) -> Result<(), MirrorError> {
+    let res = fs::copy(from.clone(), to.clone());
+    if res.is_err() {
+        return Err(MirrorError::new(&format!(
+            "[fs_copy] from {} : to {} {}",
+            from,
+            to,
+            res.as_ref().err().unwrap().to_string().to_lowercase(),
+        )));
+    }
+    Ok(())
 }
 
 pub async fn fs_handler(
@@ -228,7 +232,7 @@ pub async fn fs_handler(
             let res = fs::create_dir_all(&dir_file);
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "creating directory {} {}",
+                    "[fs_handler] creating directory {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -239,7 +243,7 @@ pub async fn fs_handler(
             let res = fs::remove_file(&dir_file);
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "deleting file {} {}",
+                    "[fs_handler] deleting file {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -250,7 +254,7 @@ pub async fn fs_handler(
             let res = fs::remove_dir_all(&dir_file);
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "deleting directory {} {}",
+                    "[fs_handler] deleting directory {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -261,7 +265,7 @@ pub async fn fs_handler(
             let res = fs::write(&dir_file, data.unwrap());
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "writing file {} {}",
+                    "[fs_handler] writing file {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -272,7 +276,7 @@ pub async fn fs_handler(
             let res = fs::read_to_string(&dir_file);
             if res.is_err() {
                 let err = MirrorError::new(&format!(
-                    "reading file {} {}",
+                    "[fs_handler] reading file {} {}",
                     dir_file,
                     res.err().unwrap().to_string().to_lowercase()
                 ));
@@ -281,7 +285,7 @@ pub async fn fs_handler(
             return Ok(res.unwrap());
         }
         _ => {
-            let err = MirrorError::new(&format!("mode {} not supported", dir_file,));
+            let err = MirrorError::new(&format!("[fs_handler] mode {} not supported", dir_file,));
             return Err(err);
         }
     }
@@ -290,7 +294,7 @@ pub async fn fs_handler(
 
 // verify_file - function to check size and sha256 hash of contents
 pub async fn verify_file(
-    log: &Logging,
+    _log: &Logging,
     dir: String,
     blob_sum: String,
     blob_size: u64,
@@ -299,7 +303,6 @@ pub async fn verify_file(
     let f = &format!("{}/{}", dir, blob_sum);
     let res = fs::metadata(&f);
     if res.is_ok() {
-        log.info(&format!("verifying blob  {}", &blob_sum));
         if res.unwrap().size() != blob_size {
             let err = MirrorError::new(&format!(
                 "sha256 file size don't match {}",
@@ -310,7 +313,8 @@ pub async fn verify_file(
         let hash = digest(&data);
         if hash != blob_sum {
             let err = MirrorError::new(&format!(
-                "sha256 hash contents don't match {}",
+                "sha256 hash contents don't match {} {}",
+                hash,
                 blob_sum.clone()
             ));
             return Err(err);
@@ -320,6 +324,20 @@ pub async fn verify_file(
         return Err(err);
     }
     Ok(())
+}
+
+// parse the manifest json
+pub fn parse_json_metadata(data: String) -> Result<Vec<MirrorImageInfo>, MirrorError> {
+    // Parse the string of data into serde_json::Manifest.
+    let res = serde_json::from_str(&data);
+    if res.is_err() {
+        return Err(MirrorError::new(&format!(
+            "[parse_json_metadata] {}",
+            res.err().unwrap().to_string().to_lowercase()
+        )));
+    }
+    let root: Vec<MirrorImageInfo> = res.unwrap();
+    Ok(root)
 }
 
 // parse the manifest json
@@ -377,16 +395,8 @@ pub fn read_and_parse_manifest(file: String) -> Result<ManifestSchema, MirrorErr
         ));
         return Err(err);
     }
-    let manifest = parse_json_manifest(data.unwrap());
-    if manifest.is_err() {
-        let err = MirrorError::new(&format!(
-            "[read_and_parse_manifest] parsing manifest data {} {}",
-            file,
-            manifest.err().unwrap().to_string().to_lowercase(),
-        ));
-        return Err(err);
-    }
-    Ok(manifest.unwrap())
+    let manifest = parse_json_manifest(data.unwrap())?;
+    Ok(manifest.clone())
 }
 
 pub fn read_and_parse_oci_manifest(file: String) -> Result<Manifest, MirrorError> {
@@ -399,16 +409,8 @@ pub fn read_and_parse_oci_manifest(file: String) -> Result<Manifest, MirrorError
         ));
         return Err(err);
     }
-    let manifest = parse_json_manifest_operator(data.unwrap());
-    if manifest.is_err() {
-        let err = MirrorError::new(&format!(
-            "[read_and_parse_oci_manifest] parsing oci manifest data {} {}",
-            file,
-            manifest.err().unwrap().to_string().to_lowercase(),
-        ));
-        return Err(err);
-    }
-    Ok(manifest.unwrap())
+    let manifest = parse_json_manifest_operator(data.unwrap())?;
+    Ok(manifest.clone())
 }
 
 pub fn read_and_parse_oci_manifestlist(file: String) -> Result<ManifestList, MirrorError> {
@@ -421,16 +423,8 @@ pub fn read_and_parse_oci_manifestlist(file: String) -> Result<ManifestList, Mir
         ));
         return Err(err);
     }
-    let manifest = parse_json_manifestlist(data.unwrap());
-    if manifest.is_err() {
-        let err = MirrorError::new(&format!(
-            "[read_and_parse_oci_manifestlist] parsing oci manifest data {} {}",
-            file,
-            manifest.err().unwrap().to_string().to_lowercase(),
-        ));
-        return Err(err);
-    }
-    Ok(manifest.unwrap())
+    let manifest = parse_json_manifestlist(data.unwrap())?;
+    Ok(manifest.clone())
 }
 
 pub fn read_and_parse_metadata(file: String) -> Result<Vec<MirrorImageInfo>, MirrorError> {
@@ -443,16 +437,8 @@ pub fn read_and_parse_metadata(file: String) -> Result<Vec<MirrorImageInfo>, Mir
         ));
         return Err(err);
     }
-    let md = parse_json_metadata(data.unwrap());
-    if md.is_err() {
-        let err = MirrorError::new(&format!(
-            "[read_and_parse_oci_manifestlist] parsing mirror-metadata {} {}",
-            file,
-            md.err().unwrap().to_string().to_lowercase(),
-        ));
-        return Err(err);
-    }
-    Ok(md.unwrap())
+    let md = parse_json_metadata(data.unwrap())?;
+    Ok(md.clone())
 }
 
 pub async fn process_and_update_manifest(
@@ -468,7 +454,10 @@ pub async fn process_and_update_manifest(
     let mut changed = false;
     let res_file = file_override.get(&file.clone());
     if res_file.is_some() {
-        log.debug(&format!("using override file {}", res_file.unwrap()));
+        log.debug(&format!(
+            "[process_and_update_manifest] using override file {}",
+            res_file.unwrap()
+        ));
         return Ok(Some(res_file.unwrap().to_string()));
     }
     let exists = Path::new(&file.clone()).exists();
@@ -487,4 +476,186 @@ pub async fn process_and_update_manifest(
         return Ok(Some(file.clone()));
     }
     Ok(None)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fs_handler_all_fail() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+
+        macro_rules! aw {
+            ($e:expr) => {
+                tokio_test::block_on($e)
+            };
+        }
+
+        let res = aw!(fs_handler("/root/crap".to_string(), "create_dir", None));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+
+        let res = aw!(fs_handler("/root/crap".to_string(), "remove_dir", None));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+
+        let res = aw!(fs_handler(
+            "/root/crap.txt".to_string(),
+            "remove_file",
+            None
+        ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+
+        let res = aw!(fs_handler("/root/crap.txt".to_string(), "read", None));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+
+        let res = aw!(fs_handler(
+            "/root/crap.txt".to_string(),
+            "write",
+            Some("nonesens".to_string())
+        ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn fs_verify_file_pass() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+
+        macro_rules! aw {
+            ($e:expr) => {
+                tokio_test::block_on($e)
+            };
+        }
+
+        let data = fs::read_to_string("test-artifacts/do-not-delete/manifests/additional/c9e9e89d3e43c791365ec19dc5acd1517249a79c09eb482600024cd1c6475abe").expect("should read file");
+
+        let res = aw!(verify_file(
+            log,
+            "test-artifacts/do-not-delete/manifests/additional".to_string(),
+            "c9e9e89d3e43c791365ec19dc5acd1517249a79c09eb482600024cd1c6475abe".to_string(),
+            504,
+            data.into_bytes()
+        ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_ok(), true);
+    }
+    #[test]
+    fn fs_verify_file_fail() {
+        let log = &Logging {
+            log_level: Level::INFO,
+        };
+
+        macro_rules! aw {
+            ($e:expr) => {
+                tokio_test::block_on($e)
+            };
+        }
+
+        let data = fs::read_to_string("test-artifacts/do-not-delete/manifests/additional/c9e9e89d3e43c791365ec19dc5acd1517249a79c09eb482600024cd1c6475abe").expect("should read file");
+
+        let res = aw!(verify_file(
+            log,
+            "test-artifacts/do-not-delete/manifests/additional".to_string(),
+            "c9e9e89d3e43c791365ec19dc5acd1517249a79c09eb482600024cd1c6475abe".to_string(),
+            100,
+            data.clone().into_bytes()
+        ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+
+        let res = aw!(verify_file(
+            log,
+            "test-artifacts/do-not-delete/manifests/additional".to_string(),
+            "sha256:65e311ef7036acc3692d291403656b840fd216d120b3c37af768f91df050257d".to_string(),
+            428,
+            data.clone().into_bytes()
+        ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn parse_json_manifest_fail() {
+        let data = "{ ".to_string();
+        let res = parse_json_manifest(data);
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn parse_json_manifestlist_fail() {
+        let data = "{ ".to_string();
+        let res = parse_json_manifestlist(data);
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn parse_json_manifest_operator_fail() {
+        let data = "{ ".to_string();
+        let res = parse_json_manifest_operator(data);
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn read_and_parse_manifest_fail() {
+        let res = read_and_parse_manifest(".nofile".to_string());
+        assert_eq!(res.is_err(), true);
+        let res = read_and_parse_manifest("test-artifact/do-not-delete/bad.json".to_string());
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn read_and_parse_oci_manifestlist_fail() {
+        let res = read_and_parse_oci_manifestlist(".nofile".to_string());
+        assert_eq!(res.is_err(), true);
+        let res =
+            read_and_parse_oci_manifestlist("test-artifact/do-not-delete/bad.json".to_string());
+        assert_eq!(res.is_err(), true);
+    }
+    #[test]
+    fn read_and_parse_oci_manifest_fail() {
+        let res = read_and_parse_oci_manifest(".nofile".to_string());
+        assert_eq!(res.is_err(), true);
+        let res = read_and_parse_manifest("test-artifact/do-not-delete/bad.json".to_string());
+        assert_eq!(res.is_err(), true);
+    }
 }

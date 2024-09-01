@@ -923,7 +923,9 @@ dependencies = [
 [[package]]
 name = "mirror-auth"
 version = "0.6.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-auth?branch=main#f9d7c967efb87bb42b9212852515e075f434b5bb"
 dependencies = [
+ "async-trait",
  "base64",
  "custom-logger",
  "mirror-error",
@@ -950,7 +952,8 @@ dependencies = [
 
 [[package]]
 name = "mirror-catalog-index"
-version = "0.3.0"
+version = "0.4.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#719cc3675455780b1be331159ca1c186231ac2fb"
 dependencies = [
  "custom-logger",
  "flate2",
@@ -976,6 +979,7 @@ dependencies = [
 [[package]]
 name = "mirror-copy"
 version = "0.6.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-copy?branch=main#6809a4321143e1c4e8e0b31947de9f416b0e6fb3"
 dependencies = [
  "async-trait",
  "base64",

@@ -9,6 +9,7 @@ use chrono::{DateTime, Local};
 use custom_logger::*;
 use hex::encode;
 use mirror_auth::get_token;
+use mirror_auth::ImplTokenInterface;
 use mirror_catalog_index::untar_layers;
 use mirror_copy::{FsLayer, ImageReference, RegistryInterface};
 use mirror_error::MirrorError;
@@ -78,13 +79,13 @@ pub struct ReleaseImageInfo {
     pub original_ref: String,
 }
 // collect all operator images
-pub async fn release_mirror_to_disk<T: RegistryInterface>(
+pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
     reg_con: T,
     log: &Logging,
     releases: Release,
     mp: MirrorParameters,
 ) -> Result<(), MirrorError> {
-    log.hi("release collector mode: mirror-to-disk");
+    log.hi("[release_mirror_to_disk] collector mode: mirror-to-disk");
 
     // set up dir to store all manifests
     fs_handler(
@@ -97,13 +98,23 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
     let mut vec_process_manifests: Vec<ReleaseImageInfo> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut fslayers: HashMap<String, Vec<FsLayer>> = HashMap::new();
-
+    let t_impl = ImplTokenInterface {};
     // parse the config
     for release in releases.images.iter() {
         // parse image index
         let index_image_ref = convert_release_image_index(log, release.name.clone());
-        log.debug(&format!("image refs {:#?}", index_image_ref.clone()));
-        let token = get_token(log, index_image_ref.clone().registry).await?;
+        log.debug(&format!(
+            "[release_mirror_to_disk] image refs {:#?}",
+            index_image_ref.clone()
+        ));
+        let token = get_token(
+            t_impl.clone(),
+            log,
+            index_image_ref.clone().registry,
+            "".to_string(),
+            mp.tls_verify,
+        )
+        .await?;
         let manifest: String;
         let release_manifest_file = format!(
             "{}/{}/{}/manifest.json",
@@ -120,10 +131,20 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 index_image_ref.name,
                 index_image_ref.version
             );
-            log.mid(&format!("api call for manifest {}", release.name.clone()));
+            log.info(&format!(
+                "[release_mirror_to_disk] api call for manifest {}",
+                release.name.clone()
+            ));
             let res = reg_con
                 .get_manifest(manifest_url.clone(), token.clone())
                 .await?;
+            let release_manifest_dir = &format!(
+                "{}/{}/{}",
+                mp.dir.clone(),
+                "ocp-release",
+                index_image_ref.version
+            );
+            fs_handler(release_manifest_dir.to_string(), "create_dir", None).await?;
             let changed = process_and_update_manifest(
                 log,
                 res.clone(),
@@ -158,8 +179,8 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     index_image_ref.clone().name,
                     mfst.digest.as_ref().unwrap()
                 );
-                log.info(&format!(
-                    "checking multi arch manifest for {}",
+                log.debug(&format!(
+                    "[release_mirror_to_disk] checking multi arch manifest for {}",
                     release.name.clone() + "/" + mfst.digest.as_ref().unwrap()
                 ));
 
@@ -181,7 +202,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     mfst.platform.as_ref().unwrap().architecture,
                 );
                 log.info(&format!(
-                    "manifest_json_dir {}",
+                    "[release_mirror_to_disk] manifest_json_dir {}",
                     inner_manifest_json_dir.clone()
                 ));
                 fs_handler(inner_manifest_json_dir.to_string(), "create_dir", None).await?;
@@ -205,13 +226,16 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         }
 
         if vec_process_manifests.clone().len() == 0 {
-            log.info("no change detected in manifest files")
+            log.info("[release_mirror_to_disk] no change detected in manifest files")
         }
 
         for mf in vec_process_manifests.clone().iter() {
-            log.info("changed detected in manifest file/s");
-            log.info(&format!("processing {} ", mf.file));
-            log.debug(&format!("original ref {} ", mf.original_ref));
+            log.info("[release_mirror_to_disk] changed detected in manifest file/s");
+            log.info(&format!("[release_mirror_to_disk] processing {} ", mf.file));
+            log.debug(&format!(
+                "[release_mirror_to_disk] original ref {} ",
+                mf.original_ref
+            ));
             let mut vec_fslayer: Vec<FsLayer> = Vec::new();
             //TODO: change the function convert_release...
             let image_ref = convert_release_image_index(log, mf.clone().original_ref);
@@ -220,23 +244,37 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 image_ref.registry, image_ref.namespace, image_ref.name
             );
             let blobs_dir = &format!("{}/{}/", mp.dir.clone(), "blobs-store",);
-            log.info(&format!("blobs_dir {}", blobs_dir.clone()));
+            log.info(&format!(
+                "[release_mirror_to_disk] blobs_dir {}",
+                blobs_dir.clone()
+            ));
             let parsed_manifest = read_and_parse_oci_manifest(mf.file.clone())?;
             // not oci format
             let version = parsed_manifest.schema_version.unwrap();
             if version == 1 {
                 let v1_mnfst = read_and_parse_manifest(mf.file.clone())?;
-                reg_con
-                    .get_blobs(
-                        log,
-                        blobs_dir.clone(),
-                        blobs_url.to_string(),
-                        token.clone(),
-                        v1_mnfst.fs_layers.clone(),
-                    )
-                    .await?;
+                let mut map: HashMap<String, Vec<FsLayer>> = HashMap::new();
+                map.insert(blobs_url.to_string(), v1_mnfst.fs_layers.clone());
+                execute_batch(
+                    reg_con.clone(),
+                    log,
+                    blobs_dir.clone(),
+                    mp.verify_blobs,
+                    mp.tls_verify,
+                    map,
+                )
+                .await?;
+                //reg_con
+                //    .get_blobs(
+                //        log,
+                //        blobs_dir.clone(),
+                //        blobs_url.to_string(),
+                //        token.clone(),
+                //        v1_mnfst.fs_layers.clone(),
+                //    )
+                //    .await?;
                 vec_fslayer.append(&mut v1_mnfst.fs_layers.clone());
-                log.info("completed release image index (v1) download");
+                log.info("[release_mirror_to_disk] completed release image index (v1) download");
             } else {
                 let layers = parsed_manifest;
                 log.debug(&format!("parsed manifest {:#?}", layers.clone()));
@@ -250,16 +288,27 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                     };
                     vec_fslayer.insert(0, fslayer);
                 }
-                reg_con
-                    .get_blobs(
-                        log,
-                        blobs_dir.clone(),
-                        blobs_url.to_string(),
-                        token.clone(),
-                        vec_fslayer.clone(),
-                    )
-                    .await?;
-                log.info("completed release image index (v2) download");
+                let mut map: HashMap<String, Vec<FsLayer>> = HashMap::new();
+                map.insert(blobs_url.to_string(), vec_fslayer.clone());
+                execute_batch(
+                    reg_con.clone(),
+                    log,
+                    blobs_dir.clone(),
+                    mp.verify_blobs,
+                    mp.tls_verify,
+                    map,
+                )
+                .await?;
+                //reg_con
+                //    .get_blobs(
+                //         log,
+                //        blobs_dir.clone(),
+                //        blobs_url.to_string(),
+                //        token.clone(),
+                //        vec_fslayer.clone(),
+                //    )
+                //    .await?;
+                log.info("[release_mirror_to_disk] completed release image index (v2) download");
             }
             let working_dir_cache = &format!(
                 "{}/{}/{}/cache",
@@ -270,13 +319,14 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             log.info(&format!("working_dir_cache {}", working_dir_cache));
             let cache_exists = Path::new(&working_dir_cache).exists();
             if cache_exists {
-                rm_rf::remove(&working_dir_cache).expect("should delete current untarred cache");
+                rm_rf::remove(&working_dir_cache)
+                    .expect("[release_mirror_to_disk] should delete current untarred cache");
             }
             let mut builder = DirBuilder::new();
             builder.mode(0o777);
             builder
                 .create(&working_dir_cache)
-                .expect("unable to create directory");
+                .expect("[release_mirror_to_disk] unable to create directory");
             untar_layers(
                 log,
                 blobs_dir.clone(),
@@ -284,7 +334,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                 vec_fslayer.clone(),
             )
             .await;
-            log.hi("completed untar of layers");
+            log.hi("[release_mirror_to_disk] completed untar of layers");
         }
 
         // find the directory 'release-manifests'
@@ -308,7 +358,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
             if obj.path().is_file() {
                 let manifest_file = obj.path().to_string_lossy();
                 log.debug(&format!(
-                    "check for release-references {} {} ",
+                    "[release_mirror_to_disk] check for release-references {} {} ",
                     version,
                     manifest_file.clone(),
                 ));
@@ -329,12 +379,18 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                                 image_ref.name,
                                 image_ref.version,
                             );
-                            log.trace(&format!("manifest url {:#?}", manifest_url.clone()));
+                            log.trace(&format!(
+                                "[release_mirror_to_disk] manifest url {:#?}",
+                                manifest_url.clone()
+                            ));
                             // use the RegistryInterface to make the call
                             let res_manifest = reg_con
                                 .get_manifest(manifest_url.clone(), token.clone())
                                 .await?;
-                            log.mid(&format!("api call for manifest {:#?}", img.name));
+                            log.info(&format!(
+                                "[release_mirror_to_disk] api call for manifest {:#?}",
+                                img.name
+                            ));
                             let f = &format!(
                                 "{}/manifests/release/{}-{}.json",
                                 mp.dir.clone(),
@@ -344,7 +400,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                             let digest = get_sha_from_contents(res_manifest.clone().as_bytes());
                             if digest != image_ref.version.split(":").nth(1).unwrap() {
                                 log.warn(&format!(
-                                    "digest and file sha does not match {} : {}",
+                                    "[release_mirror_to_disk] digest and file sha does not match {} : {}",
                                     img.name, image_ref.version
                                 ));
                             }
@@ -366,9 +422,18 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
                         // this was done intentionally as it ensures that our manifest
                         // file is correct and parsable
                         let local_manifest = read_and_parse_oci_manifest(mnfst_on_disk.clone())?;
-                        log.info(&format!("checking manifest {}", img.name));
-                        log.debug(&format!("manifest on disk {} ", mnfst_on_disk.clone()));
-                        log.debug(&format!("sha {} ", image_ref.version));
+                        log.debug(&format!(
+                            "release_mirror_to_disk] checking manifest {}",
+                            img.name
+                        ));
+                        log.debug(&format!(
+                            "[release_mirror_to_disk] manifest on disk {} ",
+                            mnfst_on_disk.clone()
+                        ));
+                        log.debug(&format!(
+                            "[release_mirror_to_disk] sha {} ",
+                            image_ref.version
+                        ));
                         let op_url = format!(
                             "https://{}/v2/{}/{}/blobs/",
                             image_ref.registry, image_ref.namespace, image_ref.name,
@@ -420,9 +485,10 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
 
     if releases.graph.is_some() && !mp.dry_run {
         if releases.graph.unwrap().contains("true") {
-            log.mid("build graph data");
+            log.info("[release_mirror_to_disk] build graph data");
             let g_impl = ImplGraphDataInterface {};
-            g_impl.build_graph_image(log, mp.dir.clone()).await?;
+            let url = "https://api.openshift.com/api/upgrades_info/graph-data".to_string();
+            g_impl.build_graph_image(log, mp.dir.clone(), url).await?;
             let p_fbi = process_fb_image(
                 mp.dir.clone(),
                 "graph-image".to_string(),
@@ -464,12 +530,20 @@ pub async fn release_mirror_to_disk<T: RegistryInterface>(
         )
         .await?;
         log.mid(&format!(
-            "created release mapping file in folder {}",
+            "[release_mirror_to_disk] created release mapping file in folder {}",
             mp.dir.clone() + &"/mappings/",
         ));
     } else {
         let map = remove_duplicates(mp.dir.clone(), fslayers);
-        let res = execute_batch(log, mp.dir.clone(), mp.verify_blobs, mp.tls_verify, map).await;
+        let res = execute_batch(
+            reg_con.clone(),
+            log,
+            format!("{}/{}", mp.dir.clone(), "blobs-store"),
+            mp.verify_blobs,
+            mp.tls_verify,
+            map,
+        )
+        .await;
         if res.is_err() {
             return Err(res.err().unwrap());
         }
@@ -552,6 +626,12 @@ mod tests {
     use async_trait::async_trait;
     use mirror_copy::Manifest;
 
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
+
     // do simple tests first
     #[test]
     fn parse_json_release_imagereference_should_fail() {
@@ -565,6 +645,42 @@ mod tests {
 
     #[test]
     fn release_mirror_to_disk_pass() {
+        let _ = aw!(fs_handler(
+            "test-artifacts/mirror-metadata".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/mappings".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/ac".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/manifests".to_string(),
+            "create_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/artifacts".to_string(),
+            "create_dir",
+            None
+        ));
+
+        fs::copy(
+            "test-artifacts/raw-tar-files/cincinnati-graph-data.tar.gz",
+            "test-artifacts/artifacts/cincinnati-graph-data.tar.gz",
+        )
+        .expect("should copy tar.gz file");
+
+        let from = "test-artifacts/raw-tar-files/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e".to_string();
+        let to = "test-artifacts/blobs-store/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e".to_string();
+        fs::copy(from, to).expect("should copy raw tar files");
+
         // we set up a mock server for the auth-credentials
         let mut server = mockito::Server::new();
         let url = server.url();
@@ -596,14 +712,8 @@ mod tests {
             .create();
 
         let log = &Logging {
-            log_level: Level::TRACE,
+            log_level: Level::INFO,
         };
-
-        macro_rules! aw {
-            ($e:expr) => {
-                tokio_test::block_on($e)
-            };
-        }
 
         #[derive(Clone)]
         struct Fake {}
@@ -651,6 +761,19 @@ mod tests {
                 Ok(content.to_string())
             }
 
+            async fn get_blob(
+                &self,
+                log: &Logging,
+                _dir: String,
+                _url: String,
+                _token: String,
+                _verify_blob: bool,
+                _blob_sum: String,
+            ) -> Result<(), MirrorError> {
+                log.info("[get_blob] fake call");
+                Ok(())
+            }
+
             async fn get_blobs(
                 &self,
                 log: &Logging,
@@ -659,14 +782,10 @@ mod tests {
                 _token: String,
                 layers: Vec<FsLayer>,
             ) -> Result<String, MirrorError> {
-                if url.contains("test-release-image/blobs/") {
-                    let from = "test-artifacts/raw-tar-files/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e".to_string();
-                    let to = "test-artifacts/blobs-store/ac/ac202bb709d9c0744e8fd6f3ed3c5c57eec4c7b16caeadac7b4b323f94f5809e".to_string();
-                    fs::copy(from, to).expect("should copy raw tar files");
-                }
-                log.debug(&format!("fake [get_blobs] dir {}", dir));
-                log.debug(&format!("fake [get_blobs] url {}", url));
-                log.debug(&format!("fake [get_blobs] layesr {:?}", layers));
+                if url.contains("test-release-image/blobs/") {}
+                log.debug(&format!("[get_blobs] fake dir {}", dir));
+                log.debug(&format!("[get_blobs] fake url {}", url));
+                log.debug(&format!("[get_blobs] fake layesr {:?}", layers));
                 Ok("ok".to_string())
             }
 
@@ -685,17 +804,6 @@ mod tests {
         }
 
         let fake = Fake {};
-
-        fs::create_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should create mirror-metadata test folder");
-        fs::create_dir_all("./test-artifacts/mappings")
-            .expect("should create mappings test folder");
-        fs::create_dir_all("./test-artifacts/blobs-store/ac")
-            .expect("should create blobs-store test folder");
-        fs::create_dir_all("./test-artifacts/manifests")
-            .expect("should create manifests test folder");
-        fs::create_dir_all("./test-artifacts/artifacts")
-            .expect("should create artifacts test folder");
 
         // setup mp struct for all sub-tests
         let mut map: HashMap<String, String> = HashMap::new();
@@ -838,6 +946,12 @@ mod tests {
             release_v1.clone(),
             mp.clone()
         ));
+        if res.is_err() {
+            log.error(&format!(
+                "result -> {}",
+                res.as_ref().err().unwrap().to_string().to_lowercase()
+            ));
+        }
         assert_eq!(res.is_ok(), true);
         println!("");
 
@@ -930,15 +1044,30 @@ mod tests {
         }
         assert_eq!(res.is_ok(), true);
 
-        fs::remove_dir_all("./test-artifacts/mirror-metadata")
-            .expect("should delete mirror-metadata test folder");
-        fs::remove_dir_all("./test-artifacts/mappings")
-            .expect("should delete mappings test folder");
-        fs::remove_dir_all("./test-artifacts/blobs-store/ac")
-            .expect("should delete blobs-store test folder");
-        fs::remove_dir_all("./test-artifacts/manifests")
-            .expect("should delete manifests test folder");
-        fs::remove_dir_all("./test-artifacts/artifacts")
-            .expect("should delete artifacts test folder");
+        let _ = aw!(fs_handler(
+            "test-artifacts/mirror-metadata".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/mappings".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/blobs-store/ac".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/manifests".to_string(),
+            "remove_dir",
+            None
+        ));
+        let _ = aw!(fs_handler(
+            "test-artifacts/artifacts".to_string(),
+            "remove_dir",
+            None
+        ));
     }
 }

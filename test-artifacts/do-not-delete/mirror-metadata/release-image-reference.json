@@ -1,0 +1,15 @@
+[
+  {
+    "indexReference": "quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:60ddc5a20135561f180ab83e4a7d0653ee806270ae3f28b10c9eb43443658615",
+    "name": "agent-installer-api-server",
+    "namespace": "openshift-release-dev/ocp-v4.0-art-dev",
+    "digest": "sha256:60ddc5a20135561f180ab83e4a7d0653ee806270ae3f28b10c9eb43443658615",
+    "tag": null,
+    "arch": "x86_64",
+    "manifestType": "manifest",
+    "creationTimestamp": "2024-08-30 14:43:31.673",
+    "mirrorType": "release",
+    "bundle": null
+  }
+]
+
