@@ -1,18 +1,17 @@
 use crate::archive::create::MirrorStats;
-use crate::mirror::upload::*;
-use crate::mirror::utils::parse_json_manifest_operator;
-use crate::mirror::utils::{fs_handler, keepalive};
 use crate::MirrorParameters;
 use custom_logger::*;
 use mirror_auth::{get_token, ImplTokenInterface};
+use mirror_copy::UploadImageInterface;
 use mirror_error::MirrorError;
+use mirror_utils::{fs_handler, keepalive, parse_json_manifest_operator};
 use std::fs::{self};
 use std::io::Read;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use tar::Archive;
 
-pub async fn removable_media_disk_to_mirror<T: ProcessImageInterface>(
+pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
     g_impl: T,
     log: &Logging,
     from: String,
@@ -401,7 +400,7 @@ mod tests {
         struct Fake {}
 
         #[async_trait]
-        impl ProcessImageInterface for Fake {
+        impl UploadImageInterface for Fake {
             async fn process_manifests(
                 &self,
                 _log: &Logging,

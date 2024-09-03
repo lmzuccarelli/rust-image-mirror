@@ -1,9 +1,10 @@
-use crate::mirror::utils::{fs_copy, fs_handler, fs_open_or_create, parse_image, process_fb_image};
 use crate::podman::process::*;
-use crate::MirrorImageInfo;
 use custom_logger::*;
 use mirror_catalog_index::find_dir;
 use mirror_error::MirrorError;
+use mirror_utils::{
+    fs_copy, fs_handler, fs_open_or_create, parse_image, process_fb_image, MirrorImageInfo,
+};
 use serde_derive::{Deserialize, Serialize};
 use std::io::Read;
 

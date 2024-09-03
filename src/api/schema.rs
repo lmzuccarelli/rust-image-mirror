@@ -80,27 +80,3 @@ pub struct MirrorParameters {
     pub generic_override: HashMap<String, String>,
     pub rebuild_catalogs: Option<bool>,
 }
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialOrd, PartialEq, Ord, Eq)]
-pub struct MirrorImageInfo {
-    #[serde(rename = "indexReference")]
-    pub reference: String,
-    #[serde(rename = "name")]
-    pub name: String,
-    #[serde(rename = "namespace")]
-    pub namespace: String,
-    #[serde(rename = "digest")]
-    pub digest: String,
-    #[serde(rename = "tag")]
-    pub tag: Option<String>,
-    #[serde(rename = "arch")]
-    pub arch: String,
-    #[serde(rename = "manifestType")]
-    pub manifest_type: String,
-    #[serde(rename = "creationTimestamp")]
-    pub created: String,
-    #[serde(rename = "mirrorType")]
-    pub mirror_type: String,
-    #[serde(rename = "bundle")]
-    pub bundle: Option<String>,
-}

@@ -1,13 +1,12 @@
 // use modules
 use crate::additional::collector::*;
 use crate::clusterresources::generate::*;
-use crate::mirror::upload::*;
-use crate::mirror::utils::fs_handler;
 use crate::operator::collector::*;
 use crate::release::collector::*;
 use clap::Parser;
 use custom_logger::*;
-use mirror_copy::ImplRegistryInterface;
+use mirror_copy::{ImplDownloadImageInterface, ImplUploadImageInterface};
+use mirror_utils::fs_handler;
 use std::collections::HashMap;
 use std::process;
 use tokio;
@@ -21,7 +20,6 @@ mod catalog;
 mod clusterresources;
 mod config;
 mod graphdata;
-mod mirror;
 mod operator;
 mod podman;
 mod release;
@@ -87,7 +85,7 @@ async fn main() {
     };
 
     // initialize the client request interface
-    let reg_con = ImplRegistryInterface {};
+    let reg_con = ImplDownloadImageInterface {};
 
     // this is mirrorToDisk
     if mp.destination.contains("file://") {
@@ -245,7 +243,7 @@ async fn main() {
                 process::exit(exitcode::USAGE);
             }
         }
-        let g_impl = ImplProcessImageInterface {};
+        let g_impl = ImplUploadImageInterface {};
         let from = args.from.split("file://").nth(1).unwrap().to_string();
         let res_rm = removable_media_disk_to_mirror(
             g_impl.clone(),

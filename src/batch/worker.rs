@@ -3,11 +3,12 @@ use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use mirror_auth::get_token;
 use mirror_auth::ImplTokenInterface;
-use mirror_copy::*;
+use mirror_copy::DownloadImageInterface;
 use mirror_error::MirrorError;
+use mirror_utils::FsLayer;
 use std::collections::HashMap;
 
-pub async fn execute_batch<T: RegistryInterface + Clone>(
+pub async fn execute_batch<T: DownloadImageInterface + Clone>(
     reg_impl: T,
     log: &Logging,
     dir: String,
@@ -74,10 +75,6 @@ pub async fn execute_batch<T: RegistryInterface + Clone>(
             response.unwrap()
         }
     }
-    // Wait for the remaining to finish.
-    //while let Some(response) = futs.next().await {
-    //    response.unwrap()
-    //}
     for (_k, v) in map_in {
         if v.len() > 0 {
             let new_bar = bar.replacen("-", "#", 62);
@@ -91,6 +88,7 @@ pub async fn execute_batch<T: RegistryInterface + Clone>(
 mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
+    use mirror_copy::ImplDownloadImageInterface;
     use std::fs;
     #[test]
     fn execute_batch_pass() {
@@ -144,7 +142,7 @@ mod tests {
                 blob_sum: format!("sha256:0123456789ABCDEF{:0>2}", x),
                 original_ref: Some(format!("{}/test/test-image", url)),
                 size: Some(1234),
-                number: None,
+                // number: None,
             };
             vec_fslayer.insert(0, fslayer.clone());
         }
@@ -154,7 +152,7 @@ mod tests {
             vec_fslayer.clone(),
         );
         log.hi(&format!("executing batch worker [should pass]"));
-        let fake = ImplRegistryInterface {};
+        let fake = ImplDownloadImageInterface {};
         let res = aw!(execute_batch(
             fake.clone(),
             log,
@@ -169,7 +167,7 @@ mod tests {
             blob_sum: format!("0123456789ABCDEF00"),
             original_ref: Some(format!("{}/test/test-image", url)),
             size: Some(1234),
-            number: None,
+            //number: None,
         };
         vec_fslayer.insert(0, fslayer_err);
         map.insert(

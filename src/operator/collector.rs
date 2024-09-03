@@ -1,19 +1,19 @@
-use crate::api::schema::MirrorImageInfo;
 use crate::batch::worker::execute_batch;
 use crate::catalog::builder::*;
 use crate::config::load::*;
-use crate::mirror::utils::{
-    fs_handler, parse_image, parse_json_manifest_operator, parse_json_metadata,
-    process_and_update_manifest, remove_duplicates,
-};
 use crate::MirrorParameters;
 use custom_logger::*;
 use hex::encode;
 use mirror_auth::*;
 use mirror_catalog::*;
 use mirror_catalog_index::*;
-use mirror_copy::*;
+use mirror_copy::{DownloadImageInterface, Manifest};
 use mirror_error::MirrorError;
+use mirror_utils::{
+    fs_handler, parse_image, parse_json_manifest_operator, parse_json_manifestlist,
+    parse_json_metadata, process_and_update_manifest, remove_duplicates, FsLayer, ImageReference,
+    MirrorImageInfo,
+};
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -44,7 +44,7 @@ pub struct MirrorManifest {
 }
 
 // collect all operator images
-pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
+pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
     reg_con: T,
     log: &Logging,
     operators: Vec<Operator>,
@@ -221,7 +221,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
                         blob_sum: l.digest.clone(),
                         original_ref: Some(ir.name.clone()),
                         size: Some(l.size),
-                        number: None,
+                        //number: None,
                     };
                     fslayers.insert(0, fsl);
                 }
@@ -501,7 +501,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
                                                 blob_sum: layer.digest.clone(),
                                                 original_ref: Some(ri.image.clone()),
                                                 size: Some(layer.size),
-                                                number: None,
+                                                //number: None,
                                             };
                                             fslayers.insert(0, fslayer);
                                         }
@@ -510,7 +510,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
                                             blob_sum: config.digest.clone(),
                                             original_ref: Some(ri.image.clone()),
                                             size: Some(config.size),
-                                            number: None,
+                                            //number: None,
                                         };
                                         fslayers.insert(0, cfg);
                                     }
@@ -561,7 +561,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
                                         blob_sum: layer.digest.clone(),
                                         original_ref: Some(ri.image.clone()),
                                         size: Some(layer.size),
-                                        number: None,
+                                        //number: None,
                                     };
                                     fslayers.insert(0, fslayer);
                                 }
@@ -571,7 +571,7 @@ pub async fn operator_mirror_to_disk<T: RegistryInterface + Clone>(
                                     blob_sum: config.digest.clone(),
                                     original_ref: Some(ri.image.clone()),
                                     size: Some(config.size),
-                                    number: None,
+                                    //number: None,
                                 };
                                 fslayers.insert(0, cfg);
                             }
@@ -807,7 +807,7 @@ mod tests {
             .create();
 
         #[async_trait]
-        impl RegistryInterface for Fake {
+        impl DownloadImageInterface for Fake {
             async fn get_manifest(
                 &self,
                 url: String,
@@ -893,36 +893,11 @@ mod tests {
                 _verify_blob: bool,
                 _blob_sum: String,
             ) -> Result<(), MirrorError> {
-                log.info(&format!("babooch kaka {}", dir));
-                log.info(&format!("babooch kaka {}", url));
-                //if url.contains("v2/test/test-index-operator/blobs/") {
+                log.info(&format!("[get_blob] fake dir {}", dir));
+                log.info(&format!("[get_blob] fake url {}", url));
                 fs::copy("test-artifacts/test-index-operator/copy-cache/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f".to_string(),
                     "test-artifacts/blobs-store/5f/5f9d3dcf5281c5f6512471366be68bee46c2485eddf4fd1887da6b240712be5f".to_string()).expect("should bopy baba");
-                //}
                 Ok(())
-            }
-
-            async fn get_blobs(
-                &self,
-                _log: &Logging,
-                _dir: String,
-                _url: String,
-                _token: String,
-                _layers: Vec<FsLayer>,
-            ) -> Result<String, MirrorError> {
-                Ok("ok".to_string())
-            }
-
-            async fn push_image(
-                &self,
-                _log: &Logging,
-                _dir: String,
-                _sub_component: String,
-                _url: String,
-                _token: String,
-                _manifest: Manifest,
-            ) -> Result<String, MirrorError> {
-                Ok("ok".to_string())
             }
         }
 

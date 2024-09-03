@@ -1,5 +1,5 @@
-use crate::mirror::utils::fs_handler;
 use mirror_error::MirrorError;
+use mirror_utils::fs_handler;
 use serde_derive::{Deserialize, Serialize};
 
 /// config schema

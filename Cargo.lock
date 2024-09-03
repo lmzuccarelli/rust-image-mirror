@@ -791,6 +791,7 @@ dependencies = [
  "mirror-config",
  "mirror-copy",
  "mirror-error",
+ "mirror-utils",
  "mockito",
  "reqwest",
  "rm_rf",
@@ -952,13 +953,13 @@ dependencies = [
 
 [[package]]
 name = "mirror-catalog-index"
-version = "0.4.0"
-source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#719cc3675455780b1be331159ca1c186231ac2fb"
+version = "0.5.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#39aa99e22b64c9f6d2300cee04a2a26b18a5d91c"
 dependencies = [
  "custom-logger",
  "flate2",
  "mirror-config",
- "mirror-copy",
+ "mirror-utils",
  "serde",
  "serde_derive",
  "serde_json",
@@ -978,14 +979,13 @@ dependencies = [
 
 [[package]]
 name = "mirror-copy"
-version = "0.6.0"
-source = "git+https://github.com/lmzuccarelli/rust-mirror-copy?branch=main#6809a4321143e1c4e8e0b31947de9f416b0e6fb3"
+version = "0.7.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-copy?branch=main#b1e83aa298c32f22484bf8a5b87b3b1b5fe2cd00"
 dependencies = [
  "async-trait",
  "base64",
  "custom-logger",
  "flate2",
- "futures",
  "hex",
  "mirror-error",
  "reqwest",
@@ -1002,7 +1002,21 @@ dependencies = [
 [[package]]
 name = "mirror-error"
 version = "0.1.0"
-source = "git+https://github.com/lmzuccarelli/rust-mirror-error?branch=main#210a4be2c021077ee2bc502a76f8b3a567f8be77"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-error?branch=main#9d9c5dd348f3ab9168d20e266c5ec3b07f7f3851"
+
+[[package]]
+name = "mirror-utils"
+version = "0.2.0"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-utils?branch=main#48e742b84f79066ad2004676a844b12b0fe27a5a"
+dependencies = [
+ "custom-logger",
+ "mirror-copy",
+ "mirror-error",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "sha256",
+]
 
 [[package]]
 name = "mockito"

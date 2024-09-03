@@ -1,18 +1,19 @@
-use crate::api::schema::MirrorImageInfo;
 use crate::batch::worker::*;
 use crate::config::load::*;
-use crate::graphdata::process::GraphDataInterface;
-use crate::graphdata::process::ImplGraphDataInterface;
-use crate::mirror::utils::*;
+use crate::graphdata::process::{GraphDataInterface, ImplGraphDataInterface};
 use crate::MirrorParameters;
 use chrono::{DateTime, Local};
 use custom_logger::*;
 use hex::encode;
-use mirror_auth::get_token;
-use mirror_auth::ImplTokenInterface;
+use mirror_auth::{get_token, ImplTokenInterface};
 use mirror_catalog_index::untar_layers;
-use mirror_copy::{FsLayer, ImageReference, RegistryInterface};
+use mirror_copy::DownloadImageInterface;
 use mirror_error::MirrorError;
+use mirror_utils::{
+    fs_handler, parse_image, parse_json_manifestlist, process_and_update_manifest,
+    process_fb_image, read_and_parse_manifest, read_and_parse_metadata,
+    read_and_parse_oci_manifest, remove_duplicates, FsLayer, ImageReference, MirrorImageInfo,
+};
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -79,7 +80,7 @@ pub struct ReleaseImageInfo {
     pub original_ref: String,
 }
 // collect all operator images
-pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
+pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
     reg_con: T,
     log: &Logging,
     releases: Release,
@@ -264,15 +265,6 @@ pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
                     map,
                 )
                 .await?;
-                //reg_con
-                //    .get_blobs(
-                //        log,
-                //        blobs_dir.clone(),
-                //        blobs_url.to_string(),
-                //        token.clone(),
-                //        v1_mnfst.fs_layers.clone(),
-                //    )
-                //    .await?;
                 vec_fslayer.append(&mut v1_mnfst.fs_layers.clone());
                 log.info("[release_mirror_to_disk] completed release image index (v1) download");
             } else {
@@ -284,7 +276,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
                         blob_sum: layer.digest.clone(),
                         original_ref: Some(mf.clone().original_ref),
                         size: Some(layer.size),
-                        number: None,
+                        //number: None,
                     };
                     vec_fslayer.insert(0, fslayer);
                 }
@@ -299,15 +291,6 @@ pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
                     map,
                 )
                 .await?;
-                //reg_con
-                //    .get_blobs(
-                //         log,
-                //        blobs_dir.clone(),
-                //        blobs_url.to_string(),
-                //        token.clone(),
-                //        vec_fslayer.clone(),
-                //    )
-                //    .await?;
                 log.info("[release_mirror_to_disk] completed release image index (v2) download");
             }
             let working_dir_cache = &format!(
@@ -449,7 +432,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
                                 blob_sum: layer.digest.clone(),
                                 original_ref: Some(img.from.name.clone()),
                                 size: Some(layer.size),
-                                number: None,
+                                //number: None,
                             };
                             vec_flayer.insert(0, fslayer);
                         }
@@ -459,7 +442,7 @@ pub async fn release_mirror_to_disk<T: RegistryInterface + Clone>(
                             blob_sum: config.digest,
                             original_ref: Some(img.from.name.clone()),
                             size: Some(config.size),
-                            number: None,
+                            //number: None,
                         };
                         vec_flayer.insert(0, cfg);
                         // finally add the fslayers to the hashmap
@@ -624,7 +607,6 @@ mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
     use async_trait::async_trait;
-    use mirror_copy::Manifest;
 
     macro_rules! aw {
         ($e:expr) => {
@@ -719,7 +701,7 @@ mod tests {
         struct Fake {}
 
         #[async_trait]
-        impl RegistryInterface for Fake {
+        impl DownloadImageInterface for Fake {
             async fn get_manifest(
                 &self,
                 url: String,
@@ -772,34 +754,6 @@ mod tests {
             ) -> Result<(), MirrorError> {
                 log.info("[get_blob] fake call");
                 Ok(())
-            }
-
-            async fn get_blobs(
-                &self,
-                log: &Logging,
-                dir: String,
-                url: String,
-                _token: String,
-                layers: Vec<FsLayer>,
-            ) -> Result<String, MirrorError> {
-                if url.contains("test-release-image/blobs/") {}
-                log.debug(&format!("[get_blobs] fake dir {}", dir));
-                log.debug(&format!("[get_blobs] fake url {}", url));
-                log.debug(&format!("[get_blobs] fake layesr {:?}", layers));
-                Ok("ok".to_string())
-            }
-
-            // not used in mirror-to-disk mode
-            async fn push_image(
-                &self,
-                _log: &Logging,
-                _dir: String,
-                _sub_component: String,
-                _url: String,
-                _token: String,
-                _manifest: Manifest,
-            ) -> Result<String, MirrorError> {
-                Ok("ok".to_string())
             }
         }
 

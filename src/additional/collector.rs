@@ -1,16 +1,19 @@
-use crate::api::schema::MirrorImageInfo;
 use crate::batch::worker::execute_batch;
 use crate::config::load::*;
-use crate::mirror::utils::*;
 use crate::MirrorParameters;
 use custom_logger::*;
 use mirror_auth::*;
-use mirror_copy::{parse_json_manifestlist, FsLayer, RegistryInterface};
+use mirror_copy::DownloadImageInterface;
 use mirror_error::MirrorError;
+use mirror_utils::{
+    fs_handler, parse_image, parse_json_manifestlist, read_and_parse_metadata,
+    read_and_parse_oci_manifest, read_and_parse_oci_manifestlist, remove_duplicates, FsLayer,
+    MirrorImageInfo,
+};
 use std::collections::HashMap;
 
 // collect all additional images
-pub async fn additional_mirror_to_disk<T: RegistryInterface + Clone>(
+pub async fn additional_mirror_to_disk<T: DownloadImageInterface + Clone>(
     reg_con: T,
     log: &Logging,
     additional: Vec<Image>,
@@ -146,7 +149,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface + Clone>(
                     blob_sum: l.digest.clone(),
                     original_ref: Some(ir.name.clone()),
                     size: Some(l.size),
-                    number: None,
+                    //number: None,
                 };
                 vec_fslayers.insert(0, fsl.clone());
             }
@@ -155,7 +158,7 @@ pub async fn additional_mirror_to_disk<T: RegistryInterface + Clone>(
                 blob_sum: cfg.digest.clone(),
                 original_ref: Some(ir.name.clone()),
                 size: Some(cfg.size),
-                number: None,
+                //number: None,
             };
             vec_fslayers.insert(0, fsl);
             let img_ref = MirrorImageInfo {
@@ -241,7 +244,6 @@ mod tests {
     // this brings everything from parent's scope into this scope
     use super::*;
     use async_trait::async_trait;
-    use mirror_copy::Manifest;
     use std::fs;
 
     #[test]
@@ -297,7 +299,7 @@ mod tests {
         struct Fake {}
 
         #[async_trait]
-        impl RegistryInterface for Fake {
+        impl DownloadImageInterface for Fake {
             async fn get_manifest(
                 &self,
                 url: String,
@@ -368,29 +370,6 @@ mod tests {
             ) -> Result<(), MirrorError> {
                 log.info("[get_blob] fake call");
                 Ok(())
-            }
-
-            async fn get_blobs(
-                &self,
-                _log: &Logging,
-                _dir: String,
-                _url: String,
-                _token: String,
-                _layers: Vec<FsLayer>,
-            ) -> Result<String, MirrorError> {
-                Ok("ok".to_string())
-            }
-
-            async fn push_image(
-                &self,
-                _log: &Logging,
-                _dir: String,
-                _sub_component: String,
-                _url: String,
-                _token: String,
-                _manifest: Manifest,
-            ) -> Result<String, MirrorError> {
-                Ok("ok".to_string())
             }
         }
 

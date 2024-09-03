@@ -1,6 +1,6 @@
-use crate::mirror::utils::*;
 use custom_logger::*;
 use mirror_error::MirrorError;
+use mirror_utils::{fs_handler, parse_image, read_and_parse_metadata};
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -342,6 +342,7 @@ async fn process_itms_idms(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mirror_utils::fs_copy;
     macro_rules! aw {
         ($e:expr) => {
             tokio_test::block_on($e)
