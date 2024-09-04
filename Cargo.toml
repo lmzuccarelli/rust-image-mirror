@@ -31,7 +31,7 @@ rm_rf = "0.6.2"
 custom-logger = { git = "https://github.com/lmzuccarelli/rust-custom-logger", branch = "main", version = "0.1.4" }
 mirror-error = { git = "https://github.com/lmzuccarelli/rust-mirror-error", branch = "main", version = "0.1.0" }
 mirror-utils = { git = "https://github.com/lmzuccarelli/rust-mirror-utils", branch = "main", version = "0.2.0" }
-mirror-auth = { git = "https://github.com/lmzuccarelli/rust-mirror-auth", branch = "main", version = "0.6.0" }
+mirror-auth = { git = "https://github.com/lmzuccarelli/rust-mirror-auth", branch = "main", version = "0.7.0" }
 mirror-copy = { git = "https://github.com/lmzuccarelli/rust-mirror-copy", branch = "main", version = "0.7.0" }
 mirror-catalog = { git = "https://github.com/lmzuccarelli/rust-mirror-catalog", branch = "main", version = "0.4.1" }
 mirror-config = { git = "https://github.com/lmzuccarelli/rust-mirror-config", branch = "main" }
