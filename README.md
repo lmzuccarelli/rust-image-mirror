@@ -12,6 +12,33 @@ For platform release a specifc version and platform architecture is used (refer 
 
 **NB** To build graph images (OSUS) and rebuilding catalogs there is a dependency on Podman, i.e Podman should be installed on the os where this binary is used
 
+## Design
+
+The design approach taken here is different to oc-mirror (v2) in that it copies manifests and blobs directly to disk (verifying blobs)
+before committing to disk as apposed to using a local registry to handle manifests and blobs. The reasoning here is that by accessing
+directly from disk, tar files can be created and distributed without the need for them to be untarred in the enclave (disconnected / air-gapped scenarios),
+this disk to mirror mode indexes the tar file directly, it solves disk space problems espescially on edge devices, i.e saving space with regards to local registry,
+untarring in the enclave and pushing to a local registry before mirrroing to the remote registry.
+
+This is best illustrated in the diagram below
+
+Current oc-mirror design
+
+![oc-mirror](assets/bw-oc-mirror-overview.jpg)
+
+As can be seen the needed disk space in the example is 170G (untarred) artifacts, then 170G once pushed to local registry 
+and in this case as the remote registry is on the same server another 170G, with some servers restricted to 500G this is problematic.
+
+The diagram below shows the implemented solution 
+
+![image-mirror](assets/bw-image-mirror.jpg)
+
+The tar files are copied to removable media (or they could be copied to the server disk drive), the application indexes the tar directly without untarring contents 
+thereby improving overall disk space requirements. 
+
+The solution also does a pre query to check (skip) manifests and blobs that have already been mirrored, improving overall mirror performance.
+
+
 ## Usage
 
 This assumes you have already installed Rust (refer to https://www.rust-lang.org/tools/install)
