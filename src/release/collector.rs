@@ -90,7 +90,11 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
 
     // set up dir to store all manifests
     fs_handler(
-        format!("{}/{}", mp.dir.clone(), "/manifests/release".to_string()),
+        format!(
+            "{}/{}",
+            mp.dir.clone(),
+            "/manifests/ocp-release".to_string()
+        ),
         "create_dir",
         None,
     )
@@ -375,7 +379,7 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                                 img.name
                             ));
                             let f = &format!(
-                                "{}/manifests/release/{}-{}.json",
+                                "{}/manifests/ocp-release/{}-{}.json",
                                 mp.dir.clone(),
                                 image_ref.version,
                                 arch
@@ -396,7 +400,7 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                             .await?;
                         }
                         let mnfst_on_disk = format!(
-                            "{}/manifests/release/{}-{}.json",
+                            "{}/manifests/ocp-release/{}-{}.json",
                             mp.dir.clone(),
                             image_ref.version,
                             arch
@@ -432,7 +436,6 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                                 blob_sum: layer.digest.clone(),
                                 original_ref: Some(img.from.name.clone()),
                                 size: Some(layer.size),
-                                //number: None,
                             };
                             vec_flayer.insert(0, fslayer);
                         }
@@ -442,7 +445,6 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                             blob_sum: config.digest,
                             original_ref: Some(img.from.name.clone()),
                             size: Some(config.size),
-                            //number: None,
                         };
                         vec_flayer.insert(0, cfg);
                         // finally add the fslayers to the hashmap
@@ -451,12 +453,13 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                             reference: img.clone().from.name.clone(),
                             name: img.name.clone(),
                             arch: arch.to_string(),
-                            namespace: image_ref.namespace + &"/" + &image_ref.name,
+                            //namespace: image_ref.namespace + &"/" + &image_ref.name,
+                            namespace: "openshift/release".to_string(),
                             digest: image_ref.version,
                             manifest_type: "manifest".to_string(),
-                            tag: None,
+                            tag: Some(format!("{}-{}", version.clone(), img.name.clone())),
                             created: dt_formated.to_string(),
-                            mirror_type: "release".to_string(),
+                            mirror_type: "ocp-release".to_string(),
                             bundle: None,
                         };
                         image_ref_tracker.insert(0, mii.clone());
@@ -477,7 +480,7 @@ pub async fn release_mirror_to_disk<T: DownloadImageInterface + Clone>(
                 "graph-image".to_string(),
                 "openshift".to_string(),
                 "latest".to_string(),
-                "release".to_string(),
+                "ocp-release".to_string(),
             )
             .await?;
             image_ref_tracker.insert(0, p_fbi);

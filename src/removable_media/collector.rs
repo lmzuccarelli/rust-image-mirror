@@ -72,14 +72,21 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                     }
                     let splitter = match op_path.clone() {
                         x if x.contains("operator") => "operator/".to_string(),
-                        x if x.contains("release") => "release/".to_string(),
+                        x if x.contains("ocp-release") => "ocp-release/".to_string(),
                         x if x.contains("additional") => "additional/".to_string(),
                         _ => "none".to_string(),
                     };
-                    let ns = path.split(&splitter).nth(1).unwrap();
+                    let ns = path.split(&splitter).nth(1);
+                    if ns.is_none() {
+                        continue;
+                    }
                     if res.is_ok() {
+                        log.ex(&format!(
+                            "  checking manifest {} {} ",
+                            ns.unwrap(),
+                            sha_clean.clone()
+                        ));
                         // start our spinner
-                        log.ex(&format!("  checking manifest {}", path));
                         let (keepalive_send, keepalive_recv) = keepalive::channel();
                         let join_handle = spawn(move || {
                             let counter = 0;
@@ -96,7 +103,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                             t_impl.clone(),
                             log,
                             registry.to_string(),
-                            format!("{}/{}", registry_namespace, ns),
+                            format!("{}/{}", registry_namespace, ns.unwrap()),
                             mp.tls_verify,
                         )
                         .await?;
@@ -104,7 +111,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                             .check_manifest(
                                 log,
                                 registry.to_string(),
-                                format!("{}/{}", registry_namespace, ns),
+                                format!("{}/{}", registry_namespace, ns.unwrap()),
                                 sha_clean.to_string(),
                                 local_token.clone(),
                             )
@@ -319,7 +326,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                             }
                             let splitter = match op_path.clone() {
                                 x if x.contains("operator") => "operator/".to_string(),
-                                x if x.contains("release") => "release/".to_string(),
+                                x if x.contains("ocp-release") => "ocp-release/".to_string(),
                                 x if x.contains("additional") => "additional/".to_string(),
                                 _ => "none".to_string(),
                             };
@@ -332,7 +339,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                                 mp.tls_verify,
                             )
                             .await?;
-                            log.ex(&format!("  pushing manifest {}", ns));
+                            log.ex(&format!("  pushing manifest {} {}", ns, sha_clean));
                             if res.is_ok() {
                                 let req_res = g_impl
                                     .process_manifests(

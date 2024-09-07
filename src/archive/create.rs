@@ -36,7 +36,12 @@ pub async fn create_tar(
     fs_handler("tmp-blobs-dir".to_string(), "create_dir", None).await?;
     fs_handler(base_dir.clone() + &"/artifacts", "create_dir", None).await?;
     fs_handler("tmp-manifest-dir/operator".to_string(), "create_dir", None).await?;
-    fs_handler("tmp-manifest-dir/release".to_string(), "create_dir", None).await?;
+    fs_handler(
+        "tmp-manifest-dir/ocp-release".to_string(),
+        "create_dir",
+        None,
+    )
+    .await?;
 
     let metadata_files: Vec<&str> = vec![
         "release-image-reference.json",
