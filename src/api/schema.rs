@@ -1,5 +1,5 @@
 // module schema
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -35,7 +35,7 @@ pub struct Cli {
 
     /// set the dry-run flag.
     /// dont perform a mirror but create a mapping.txt file of all related images
-    #[arg(short, long, value_name = "dry-run", default_value = "false")]
+    #[arg(long, value_name = "dry-run", default_value = "false")]
     pub dry_run: bool,
 
     /// set the skip-manifest-check flag. Valid arguments are none, release, operators, additional,
@@ -54,15 +54,15 @@ pub struct Cli {
     pub architecture: String,
 
     /// set the skip-blob-upload flag. This will skip all blob uploads to remote registry (dev mode)
-    #[arg(short, long, value_name = "skip-blob-upload", default_value = "false")]
+    #[arg(long, value_name = "skip-blob-upload", action=ArgAction::SetFalse)]
     pub skip_blob_upload: bool,
 
     /// set the verify-blobs flag (will enable/disable sha56 contents with digest.
-    #[arg(short, long, value_name = "verify-blobs", default_value = "false")]
+    #[arg(short, long, value_name = "verify-blobs", action=ArgAction::SetFalse)]
     pub verify_blobs: bool,
 
     /// set the tls-verify flag (will use http is set to false).
-    #[arg(short, long, value_name = "tls-verify", default_value = "true")]
+    #[arg(short, long, value_name = "tls-verify", action=ArgAction::SetFalse)]
     pub tls_verify: bool,
 }
 

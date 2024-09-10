@@ -39,7 +39,11 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
 
     let url = destination.split("docker://").nth(1).unwrap();
     let registry = url.split("/").nth(0).unwrap();
-    let registry_namespace = url.split("/").nth(1).unwrap();
+    let registry_res = url.split("/").nth(1);
+    let mut registry_namespace: &str = "";
+    if registry_res.is_some() {
+        registry_namespace = registry_res.unwrap();
+    }
 
     if data.is_ok() {
         log.ex(&format!(
@@ -107,6 +111,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                             mp.tls_verify,
                         )
                         .await?;
+
                         let req_res = g_impl
                             .check_manifest(
                                 log,
