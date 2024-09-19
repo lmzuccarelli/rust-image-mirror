@@ -14,22 +14,11 @@ For platform release a specifc version and platform architecture is used (refer 
 
 ## Design
 
-The design approach taken here is different to oc-mirror (v2) in that it copies manifests and blobs directly to disk (verifying blobs)
-before committing to disk as apposed to using a local registry to handle manifests and blobs. The reasoning here is that by accessing
+The design approach taken here is to save all blobs and manifests to disk directly. The reasoning here is that by accessing
 directly from disk, tar files can be created and distributed without the need for them to be untarred in the enclave (disconnected / air-gapped scenarios),
-this disk to mirror mode indexes the tar file directly, it solves disk space problems espescially on edge devices, i.e saving space with regards to local registry,
-untarring in the enclave and pushing to a local registry before mirrroing to the remote registry.
+this disk to mirror mode indexes the tar file directly, it solves disk space problems especially on edge devices.
 
 This is best illustrated in the diagram below
-
-Current oc-mirror design
-
-![oc-mirror](assets/bw-oc-mirror-overview.jpg)
-
-As can be seen the needed disk space in the example is 170G (untarred) artifacts, then 170G once pushed to local registry 
-and in this case as the remote registry is on the same server another 170G, with some servers restricted to 500G this is problematic.
-
-The diagram below shows the implemented solution 
 
 ![image-mirror](assets/bw-image-mirror.jpg)
 
@@ -97,7 +86,7 @@ Only RedHat operator images have been tested i.e
 - redhat-community-operator-index
 - redhat-certified-operator-index
 
-The disk to mirror flow has only been tested on **quay (onprem mirror-registry)**.
+The disk to mirror flow has only been tested on **quay (onprem mirror-registry)** and **distrubition/distribution** registries.
 
 There are only 2 modes in filtering operators 
 - Operator filtering uses defaultChannel head if no bundle name is specified.
