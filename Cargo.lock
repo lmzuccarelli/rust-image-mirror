@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "image-mirror"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -953,8 +953,8 @@ dependencies = [
 
 [[package]]
 name = "mirror-catalog-index"
-version = "0.6.0"
-source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#fa04af4a22afb5c6f39f22c0356922dfe672c1e6"
+version = "0.6.1"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-catalog-index?branch=main#2d262c00ec4b7d39f3b70271d465f1dec518677e"
 dependencies = [
  "custom-logger",
  "flate2",
@@ -1006,8 +1006,8 @@ source = "git+https://github.com/lmzuccarelli/rust-mirror-error?branch=main#9d9c
 
 [[package]]
 name = "mirror-utils"
-version = "0.3.0"
-source = "git+https://github.com/lmzuccarelli/rust-mirror-utils?branch=main#e32a6a42a40251944da50ac027b9a03d7f0b6e10"
+version = "0.3.1"
+source = "git+https://github.com/lmzuccarelli/rust-mirror-utils?branch=main#fa993f2c53ba694aaeabf6e7df1a60a65e2b3c3f"
 dependencies = [
  "custom-logger",
  "mirror-copy",

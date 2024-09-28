@@ -146,8 +146,14 @@ pub async fn create_tar(
             log.warn(&format!("[create_tar] no refences for {}", file));
         }
     }
-    log.ex(&format!("total manifest count      : {}", manifest_count));
-    log.ex(&format!("total blob count          : {}", blob_count));
+    log.debug(&format!(
+        "total manifest count (arch filtered )           : {}",
+        manifest_count
+    ));
+    log.debug(&format!(
+        "total blob count (arch and duplicates filtered) : {}",
+        blob_count
+    ));
     log.ex("  [create_tar] building blob archive/s ");
     let (keepalive_send, keepalive_recv) = keepalive::channel();
     let join_handle = spawn(move || {

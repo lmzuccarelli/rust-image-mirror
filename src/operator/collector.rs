@@ -70,6 +70,7 @@ pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
     let mut image_vec: Vec<String> = Vec::new();
     let mut image_ref_tracker: Vec<MirrorImageInfo> = Vec::new();
     let mut vec_catalog_info: Vec<CatalogCopyInfo> = Vec::new();
+    let mut in_map: HashMap<String, Vec<FsLayer>> = HashMap::new();
     let mut manifestlist: String;
     let t_impl = ImplTokenInterface {};
 
@@ -580,8 +581,6 @@ pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
                                 "https://{}/v2/{}/{}/blobs/",
                                 ir_pkg.registry, ir_pkg.namespace, ir_pkg.name
                             );
-
-                            let mut in_map: HashMap<String, Vec<FsLayer>> = HashMap::new();
                             let url = mp.generic_override.get("url-override");
                             if url.is_some() {
                                 let updated_url = format!(
@@ -594,16 +593,6 @@ pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
                             } else {
                                 in_map.insert(op_url.clone(), fslayers.clone());
                             }
-                            let map = remove_duplicates(mp.dir.clone(), in_map);
-                            execute_batch(
-                                reg_con.clone(),
-                                log,
-                                blobs_dir.clone(),
-                                mp.verify_blobs,
-                                mp.tls_verify,
-                                map,
-                            )
-                            .await?;
                         }
                     } else {
                         log.error(&format!(
@@ -620,15 +609,6 @@ pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
                 vec_catalog_info.insert(0, cci.clone());
             }
         }
-    }
-
-    if mp.rebuild_catalogs.is_some() && mp.rebuild_catalogs.unwrap() {
-        let g_bc = ImplCatalogBuildInterface {};
-        log.info("[operator_mirror_to_disk] rebuild catalog index");
-        let res = g_bc
-            .build_catalog(log, mp.dir.clone(), vec_catalog_info)
-            .await?;
-        image_ref_tracker.append(&mut res.clone());
     }
 
     image_ref_tracker.sort_by_key(|a| a.name.clone());
@@ -667,6 +647,26 @@ pub async fn operator_mirror_to_disk<T: DownloadImageInterface + Clone>(
             "[operator_mirror_to_disk] created operator mapping file in folder {}",
             mp.dir.clone() + &"/mappings/",
         ));
+    } else {
+        let updated_map = remove_duplicates(mp.dir.clone(), in_map.clone());
+        execute_batch(
+            reg_con.clone(),
+            log,
+            blobs_dir.clone(),
+            mp.verify_blobs,
+            mp.tls_verify,
+            updated_map.clone(),
+        )
+        .await?;
+
+        if mp.rebuild_catalogs.is_some() && mp.rebuild_catalogs.unwrap() {
+            let g_bc = ImplCatalogBuildInterface {};
+            log.info("[operator_mirror_to_disk] rebuild catalog index");
+            let res = g_bc
+                .build_catalog(log, mp.dir.clone(), vec_catalog_info)
+                .await?;
+            image_ref_tracker.append(&mut res.clone());
+        }
     }
     Ok(())
 }

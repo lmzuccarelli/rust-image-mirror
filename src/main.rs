@@ -78,10 +78,10 @@ async fn main() {
         destination: args.destination.clone(),
         skip_blob_upload: args.skip_blob_upload,
         skip_manifest_check: args.skip_manifest_check.as_ref().unwrap().to_string(),
-        tls_verify: args.tls_verify,
-        verify_blobs: args.verify_blobs,
+        tls_verify: !args.skip_tls_verify,
+        verify_blobs: !args.skip_verify_blobs,
         generic_override: HashMap::new(),
-        rebuild_catalogs: Some(true),
+        rebuild_catalogs: Some(args.rebuild_catalogs),
     };
 
     // initialize the client request interface
@@ -90,7 +90,7 @@ async fn main() {
     // this is mirrorToDisk
     if mp.destination.contains("file://") {
         if args.config.is_none() {
-            log.error("the --config flag and value is mandatory");
+            log.error("use --help to view usage");
             process::exit(1);
         }
 
@@ -239,12 +239,15 @@ async fn main() {
             process::exit(exitcode::USAGE);
         } else {
             if !args.from.contains("file://") {
-                log.error("from director with protocol must have file::// prefix");
+                log.error("from flag protocol must have file:// prefix");
                 process::exit(exitcode::USAGE);
             }
         }
         let g_impl = ImplUploadImageInterface {};
-        let from = args.from.split("file://").nth(1).unwrap().to_string();
+        let from = format!(
+            "{}/artifacts",
+            args.from.split("file://").nth(1).unwrap().to_string()
+        );
         let res_rm = removable_media_disk_to_mirror(
             g_impl.clone(),
             log,

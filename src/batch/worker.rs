@@ -17,11 +17,21 @@ pub async fn execute_batch<T: DownloadImageInterface + Clone>(
     map_in: HashMap<String, Vec<FsLayer>>,
 ) -> Result<(), MirrorError> {
     let mut futs = FuturesUnordered::new();
-    let batch_size = 8;
+    let batch_size = 10;
     let bar = "% completed    [--------------------------------------------------------------]"
         .to_string();
     let t_impl = ImplTokenInterface {};
-    // get blobs in batch of 8
+
+    // get the total amount of blobs to download
+    let mut total = 0;
+    for (_, v) in map_in.clone() {
+        total = total + v.len();
+    }
+    log.mid(&format!("total blobs to download {} ", total));
+    let mut count = 0;
+    let per_position = total as f32 / 61.0;
+
+    // get blobs in batch of 16
     // each future handles get_blobs api call
     // batch the calls
     for (k, v) in map_in.clone() {
@@ -46,11 +56,6 @@ pub async fn execute_batch<T: DownloadImageInterface + Clone>(
             tls_verify,
         )
         .await?;
-        let mut count = 0;
-        let per_position = v.len() as f32 / 61.0;
-        if v.len() > 0 {
-            log.info(&format!("[execute_batch] downloading {} blobs", v.len()));
-        }
         for layer in v.iter() {
             futs.push(reg_impl.get_blob(
                 log,
@@ -60,14 +65,14 @@ pub async fn execute_batch<T: DownloadImageInterface + Clone>(
                 verify_blob,
                 layer.blob_sum.clone(),
             ));
-            if futs.len() >= batch_size {
-                futs.next().await.unwrap()?;
-            }
             count += 1;
             if count % 10 == 0 {
                 let update = count as f32 / per_position;
                 let new_bar = bar.replacen("-", "#", update.floor() as usize);
                 log.mid(&new_bar);
+            }
+            if futs.len() >= batch_size {
+                futs.next().await.unwrap()?;
             }
         }
         // Wait for the remaining to finish.

@@ -1,8 +1,16 @@
 kind: ImageSetConfiguration
 apiVersion: mirror.openshift/v3alpha1
 mirror:
-  release: 
-  - version: "4.14.33"
+  #release: 
+  #- version: "4.14.33"
   #image: "quay.io/openshift-release-dev/ocp-release:4.14.33-x86_64"
   #image: "quay.io/openshift-release-dev/ocp-release:4.14.33-ppc64le"
-    image: "quay.io/openshift-release-dev/ocp-release:4.14.33-multi"
+  #  image: "quay.io/openshift-release-dev/ocp-release:4.14.33-multi"
+  operators:
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.15
+      packages:
+        - name: file-integrity-operator
+        - name: fuse-console
+        - name: redhat-oadp-operator
+        #- name: rhsso-operator
+        #- name: jws-operator 

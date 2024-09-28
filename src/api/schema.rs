@@ -1,5 +1,5 @@
 // module schema
-use clap::{ArgAction, Parser};
+use clap::Parser;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -48,22 +48,26 @@ pub struct Cli {
     )]
     pub skip_manifest_check: Option<String>,
 
-    /// set the architecture types to mirror valid values are arm64,amd64,ppc64le,s390x,all
+    /// set the architecture types to mirror, valid values are arm64,amd64,ppc64le,s390x,all
     /// you can combine them by adding a comma i.e arm64,amd64 as an example
     #[arg(short, long, value_name = "architecture", default_value = "amd64")]
     pub architecture: String,
 
     /// set the skip-blob-upload flag. This will skip all blob uploads to remote registry (dev mode)
-    #[arg(long, value_name = "skip-blob-upload", action=ArgAction::SetFalse)]
+    #[arg(long, value_name = "skip-blob-upload", default_value = "false")]
     pub skip_blob_upload: bool,
 
-    /// set the verify-blobs flag (will enable/disable sha56 contents with digest.
-    #[arg(short, long, value_name = "verify-blobs", action=ArgAction::SetFalse)]
-    pub verify_blobs: bool,
+    /// set the skip-verify-blobs flag. If set it will disable sha56 verification (contents with digest)
+    #[arg(short, long, value_name = "skip-verify-blobs", default_value = "false")]
+    pub skip_verify_blobs: bool,
 
-    /// set the tls-verify flag (will use http is set to false).
-    #[arg(short, long, value_name = "tls-verify", action=ArgAction::SetFalse)]
-    pub tls_verify: bool,
+    /// set the skip-tls-verify flag. If set it will use http
+    #[arg(short, long, value_name = "skip-tls-verify", default_value = "false")]
+    pub skip_tls_verify: bool,
+
+    /// set the rebuild-catalogs. If set it will rebuild catalogs
+    #[arg(short, long, value_name = "skip_tls-verify", default_value = "false")]
+    pub rebuild_catalogs: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

@@ -85,11 +85,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                         continue;
                     }
                     if res.is_ok() {
-                        log.ex(&format!(
-                            "  checking manifest {} {} ",
-                            ns.unwrap(),
-                            sha_clean.clone()
-                        ));
+                        log.ex(&format!("  checking manifest {} ", ns.unwrap(),));
                         // start our spinner
                         let (keepalive_send, keepalive_recv) = keepalive::channel();
                         let join_handle = spawn(move || {
@@ -344,7 +340,7 @@ pub async fn removable_media_disk_to_mirror<T: UploadImageInterface>(
                                 mp.tls_verify,
                             )
                             .await?;
-                            log.ex(&format!("  pushing manifest {} {}", ns, sha_clean));
+                            log.ex(&format!("  pushing manifest {} ", ns));
                             if res.is_ok() {
                                 let req_res = g_impl
                                     .process_manifests(
